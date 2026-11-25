@@ -1,5 +1,16 @@
 /target
-Cargo.lock
 .DS_Store
+.claude/
+
+# Beads local state (the tracked files are listed in .beads/.gitignore)
 .beads/beads.db*
 .br_recovery/
+
+# bv (beads viewer) local config and caches
+.bv/
+
+# ntm runtime state
+.ntm/
+
+# doctor runtime artifacts
+.doctor/

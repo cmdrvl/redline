@@ -1,0 +1,159 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/cmdrvl/redline/blob/main/docs/redline.report.v1.schema.json",
+  "title": "redline.report.v1",
+  "description": "Report emitted by `redline <old> <new> --json`. Every run emits exactly one object with exactly one outcome.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["version", "tool", "outcome", "mode", "inputs", "summary", "hunks", "refusal"],
+  "properties": {
+    "version": { "const": "redline.report.v1" },
+    "tool": { "const": "redline" },
+    "outcome": { "enum": ["NO_SEMANTIC_CHANGE", "CHANGES_FOUND", "REFUSAL"] },
+    "mode": {
+      "description": "The normalization mode actually used. Null on refusal.",
+      "enum": ["raw", "whitespace", "html-text", null]
+    },
+    "inputs": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["old", "new"],
+      "properties": {
+        "old": { "$ref": "#/$defs/input" },
+        "new": { "$ref": "#/$defs/input" }
+      }
+    },
+    "summary": {
+      "description": "Null on refusal.",
+      "oneOf": [{ "type": "null" }, { "$ref": "#/$defs/summary" }]
+    },
+    "hunks": {
+      "description": "In document order. Empty on refusal.",
+      "type": "array",
+      "items": { "$ref": "#/$defs/hunk" }
+    },
+    "refusal": {
+      "description": "Null unless outcome is REFUSAL.",
+      "oneOf": [{ "type": "null" }, { "$ref": "#/$defs/refusal" }]
+    }
+  },
+  "$defs": {
+    "input": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["path", "bytes", "digest"],
+      "properties": {
+        "path": { "type": ["string", "null"] },
+        "bytes": { "type": ["integer", "null"], "minimum": 0 },
+        "digest": {
+          "description": "blake3:<hex> of the whole input. Null when the file could not be read.",
+          "type": ["string", "null"],
+          "pattern": "^blake3:[0-9a-f]{64}$"
+        }
+      }
+    },
+    "summary": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "total_hunks",
+        "semantic_hunks",
+        "formatting_only_hunks",
+        "numeric_changed_hunks",
+        "clause_added_hunks",
+        "clause_removed_hunks",
+        "text_modified_hunks",
+        "old_tokens",
+        "new_tokens",
+        "churn_ratio"
+      ],
+      "properties": {
+        "total_hunks": { "type": "integer", "minimum": 0 },
+        "semantic_hunks": { "type": "integer", "minimum": 0 },
+        "formatting_only_hunks": { "type": "integer", "minimum": 0 },
+        "numeric_changed_hunks": { "type": "integer", "minimum": 0 },
+        "clause_added_hunks": { "type": "integer", "minimum": 0 },
+        "clause_removed_hunks": { "type": "integer", "minimum": 0 },
+        "text_modified_hunks": { "type": "integer", "minimum": 0 },
+        "old_tokens": {
+          "description": "Word and punctuation tokens in the old input. Whitespace is not counted.",
+          "type": "integer",
+          "minimum": 0
+        },
+        "new_tokens": { "type": "integer", "minimum": 0 },
+        "churn_ratio": {
+          "description": "Tokens inside semantic hunks, both sides, over all tokens, both sides. Six decimal places.",
+          "type": "number",
+          "minimum": 0,
+          "maximum": 1
+        }
+      }
+    },
+    "span": {
+      "description": "Half-open raw byte range [start, end) into the original input. An empty range marks a position.",
+      "type": "array",
+      "prefixItems": [
+        { "type": "integer", "minimum": 0 },
+        { "type": "integer", "minimum": 0 }
+      ],
+      "minItems": 2,
+      "maxItems": 2
+    },
+    "digest": {
+      "description": "BLAKE3 keyed hash of the span's raw bytes. The key is blake3 derive_key(\"redline.report.v1 hunk digest key\", <whole input bytes>).",
+      "type": "string",
+      "pattern": "^blake3-keyed:[0-9a-f]{64}$"
+    },
+    "hunk": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "id",
+        "class",
+        "numeric",
+        "old_span",
+        "new_span",
+        "old_digest",
+        "new_digest",
+        "old_tokens",
+        "new_tokens"
+      ],
+      "properties": {
+        "id": { "type": "string", "pattern": "^hunk-[0-9]{3,}$" },
+        "class": {
+          "enum": ["formatting_only", "clause_added", "clause_removed", "numeric_changed", "text_modified"]
+        },
+        "numeric": {
+          "description": "The hunk adds, removes or alters a number, whatever its class.",
+          "type": "boolean"
+        },
+        "old_span": { "$ref": "#/$defs/span" },
+        "new_span": { "$ref": "#/$defs/span" },
+        "old_digest": { "$ref": "#/$defs/digest" },
+        "new_digest": { "$ref": "#/$defs/digest" },
+        "old_tokens": { "type": "integer", "minimum": 0 },
+        "new_tokens": { "type": "integer", "minimum": 0 },
+        "old_text": {
+          "description": "Normalized text of the old side. Only with --explicit, only on semantic hunks.",
+          "type": "string"
+        },
+        "new_text": { "type": "string" },
+        "text_truncated": {
+          "description": "Present and true when an excerpt was cut at the 2000-byte limit.",
+          "const": true
+        }
+      }
+    },
+    "refusal": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["code", "message", "detail", "next_command"],
+      "properties": {
+        "code": { "type": "string", "pattern": "^E_[A-Z_]+$" },
+        "message": { "type": "string" },
+        "detail": { "type": "object" },
+        "next_command": { "type": ["string", "null"] }
+      }
+    }
+  }
+}

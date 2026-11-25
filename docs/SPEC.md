@@ -162,3 +162,44 @@ Before `v0.1.0` ships, the test suite must prove:
 3. **Formatting invariance:** Re-wrapping whitespace, changing CSS attributes, or inserting HTML comments changes raw bytes but yields `NO_SEMANTIC_CHANGE` (exit `0`, `formatting_only` hunks only) in `html-text` / `whitespace` modes.
 4. **Zero-retention test:** Default output without `--explicit` never leaks raw input tokens (`spine-rules` redaction check).
 5. **`wasm32-unknown-unknown` build gate:** `cargo check --target wasm32-unknown-unknown --no-default-features` passes in CI.
+
+---
+
+## 7. Implementation Status (v0.1.0)
+
+Sections 1 to 6 are the design. This section records what the first release implements and where it settles a point the design left open or stated differently. Where this section and an earlier one disagree, this section describes the shipped behavior.
+
+### Implemented
+
+- Modes `auto`, `raw`, `whitespace`, `html-text`.
+- Canonicalization with a raw byte source map, including entity decoding per the WHATWG rules and the `ix:header` skip for Inline XBRL filings.
+- Two-level deterministic diff (blocks, then words) with `imara-diff` Histogram.
+- All five hunk classes, the summary metrics, exit codes `0` / `1` / `2`.
+- Zero-retention default and `--explicit`.
+- `redline.report.v1` with a published JSON Schema (`--schema`).
+- Typed refusals: `E_IO`, `E_EMPTY_INPUT`, `E_BINARY_INPUT`, `E_MODE_UNSUPPORTED`, `E_MODE_AMBIGUOUS`.
+- Witness records, hash-chained through `prev`, in the shared spine ledger; `witness query|last|count`.
+- Discovery surfaces in the current family shapes: `--describe` and `capabilities --json` (`operator.v1`), `doctor` (`cmdrvl.doctor.v1`), `robot-docs guide`, `--robot-triage`.
+- All five section 6 invariants as tests; the wasm build as a CI job.
+
+### Not yet implemented
+
+- Modes `markdown`, `xml-text`, `docx`. Requesting one is refused with `E_MODE_UNSUPPORTED`.
+- Stage 3 targeting: `--region`, `--section`, `--old-span`, `--new-span`, section anchors, the `section` field on hunks, `section_added` / `section_removed`, and `E_REGION_INVALID`.
+- `--lock` verification and `E_LOCK_MISMATCH`.
+- Boilerplate stripping (page numbers, running headers).
+- `cmdrvl redline` dispatch. No `cmdrvl-<subcommand>` dispatcher exists in the family today.
+
+### Decisions
+
+1. **Spans are half-open.** `old_span` and `new_span` are `[start, end)` byte ranges, matching the source map. A pure insertion or removal has an empty span on the other side, placed at the end of the preceding token.
+2. **The report's schema id is in `version`, not `schema_version`,** and the report carries `tool`. This is the family rule (spine-rules R-001) and matches `verify`.
+3. **Whitespace is part of the text, once.** A run of whitespace or a block boundary normalizes to one space, and that space is diffed like any other token. `can not` to `cannot` is a change; re-wrapping is not. Leading and trailing whitespace of the document is dropped.
+4. **`formatting_only` hunks come from a second pass.** The diff runs on normalized text and cannot see them. After diffing, each stretch the diff found equal is compared byte for byte, token by token, where a token's bytes include the markup and whitespace in front of it. One hunk is emitted per stretch that differs, spanning the first differing token to the last.
+5. **Class precedence.** A pure insertion or removal that covers whole sentences is `clause_added` / `clause_removed`, even when it contains numbers. Otherwise a change that alters the sequence of digit-bearing tokens is `numeric_changed`. Everything else is `text_modified`. A separate `numeric` boolean on every hunk reports whether numbers were touched, so filtering on numbers does not miss added clauses.
+6. **Hunk digests are keyed.** `old_digest` and `new_digest` are `blake3-keyed:<hex>`: BLAKE3 keyed hashes of the span's raw bytes, with the key `derive_key("redline.report.v1 hunk digest key", <whole input>)`. The design called for plain `blake3:` hashes, but a plain hash of a short hunk (`5.25%`) can be reversed by guessing, which would break zero retention. A holder of the input can still recompute and check every digest. Whole-input digests in `inputs` stay plain `blake3:` so they match `lock`.
+7. **Invariant 1, stated precisely.** For a semantic hunk, canonicalizing the raw slice as a fragment (edges not trimmed) yields the hunk's text. For a `formatting_only` hunk, the two raw slices differ and canonicalize to the same text.
+8. **Symmetry is exact.** The diff always runs in one fixed input order and the result is mirrored when the caller's order is the opposite, so `redline B A` is the mirror image of `redline A B`.
+9. **`auto` does not guess across formats.** If one input looks like HTML and the other does not, the run is refused with `E_MODE_AMBIGUOUS`.
+10. **Changes are cleaned up before reporting.** Edits separated only by punctuation or spacing are joined. Inside one block, an unchanged run no longer than the edits on both sides of it is folded into them, so a rewritten paragraph is one hunk. Whole added or removed sentences are never folded.
+11. **Witness records never hold document text,** with or without `--explicit`.

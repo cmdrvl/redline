@@ -1,0 +1,290 @@
+{
+  "schema_version": "operator.v1",
+  "name": "redline",
+  "tool_version": "0.1.0",
+  "contract_version": "1.0.0",
+  "description": "Deterministic prose and document diff: compares two versions of a text or HTML document and reports every change as exact byte spans in the original files, classified and redacted by default.",
+  "repository": "https://github.com/cmdrvl/redline",
+  "license": "MIT",
+  "agent_guide": "https://github.com/cmdrvl/.github/blob/main/profile/AGENT_PROMPT.md",
+  "invocation": {
+    "binary": "redline",
+    "usage": [
+      "redline <old> <new> [OPTIONS]",
+      "redline capabilities --json",
+      "redline robot-docs guide",
+      "redline witness <query|last|count> [OPTIONS]",
+      "redline doctor [--json]",
+      "redline doctor capabilities --json",
+      "redline doctor triage --json",
+      "redline --robot-triage (alias of: redline doctor triage --json)"
+    ],
+    "output_mode": "report",
+    "output_schema": "redline.report.v1",
+    "json_flag": "--json"
+  },
+  "arguments": [
+    {
+      "name": "old",
+      "type": "file_path",
+      "required": true,
+      "position": 0,
+      "description": "The earlier version of the document (UTF-8 text or HTML)"
+    },
+    {
+      "name": "new",
+      "type": "file_path",
+      "required": true,
+      "position": 1,
+      "description": "The later version of the document (UTF-8 text or HTML)"
+    }
+  ],
+  "options": [
+    {
+      "name": "mode",
+      "flag": "--mode",
+      "type": "string",
+      "default": "auto",
+      "values": ["auto", "raw", "whitespace", "html-text"],
+      "description": "How inputs are normalized before diffing. auto picks html-text or whitespace from the content."
+    },
+    {
+      "name": "json",
+      "flag": "--json",
+      "type": "flag",
+      "description": "Emit JSON output (single object)"
+    },
+    {
+      "name": "explicit",
+      "flag": "--explicit",
+      "type": "flag",
+      "description": "Include the changed text of each semantic hunk (default: redacted for zero-retention safety)"
+    },
+    {
+      "name": "no_witness",
+      "flag": "--no-witness",
+      "type": "flag",
+      "description": "Suppress witness ledger recording"
+    },
+    {
+      "name": "exit_zero_on_change",
+      "flag": "--exit-zero-on-change",
+      "type": "flag",
+      "description": "Exit 0 instead of 1 on CHANGES_FOUND, for set -e pipelines. Refusals still exit 2; never affects doctor."
+    },
+    {
+      "name": "describe",
+      "flag": "--describe",
+      "type": "flag",
+      "description": "Print this operator contract and exit 0"
+    },
+    {
+      "name": "schema",
+      "flag": "--schema",
+      "type": "flag",
+      "description": "Print JSON Schema for the redline.report.v1 output format and exit 0"
+    },
+    {
+      "name": "version",
+      "flag": "--version",
+      "type": "flag",
+      "description": "Print version and exit 0"
+    }
+  ],
+  "commands": [
+    {
+      "name": "capabilities",
+      "description": "Top-level machine-readable capability contract for headless agents (this document)",
+      "status": "available",
+      "usage": "redline capabilities --json",
+      "current_runtime_behavior": {
+        "read_only": true,
+        "network": "not_used",
+        "success_exit_code": 0,
+        "writes_witness": false
+      }
+    },
+    {
+      "name": "robot-docs",
+      "description": "Agent guide: commands, exit codes, modes, how to read the report, redaction, composition",
+      "status": "available",
+      "usage": "redline robot-docs guide",
+      "current_runtime_behavior": {
+        "read_only": true,
+        "network": "not_used",
+        "success_exit_code": 0,
+        "writes_witness": false
+      }
+    },
+    {
+      "name": "witness",
+      "description": "Read the shared witness ledger",
+      "status": "available",
+      "actions": [
+        {
+          "name": "query",
+          "usage": "redline witness query [--tool <name>] [--since <ts>] [--until <ts>] [--outcome <outcome>] [--input-hash <text>] [--limit <n>] [--json]"
+        },
+        { "name": "last", "usage": "redline witness last [--json]" },
+        {
+          "name": "count",
+          "usage": "redline witness count [--tool <name>] [--since <ts>] [--until <ts>] [--outcome <outcome>] [--input-hash <text>] [--json]"
+        }
+      ],
+      "current_runtime_behavior": {
+        "read_only": true,
+        "success_exit_code": 0,
+        "query_empty_result": "exit 0, prints []",
+        "last_on_empty_ledger_exit_code": 1,
+        "error_exit_code": 2,
+        "ledger_path_resolution": ["EPISTEMIC_WITNESS", "~/.cmdrvl/state/witness/witness.jsonl"]
+      }
+    },
+    {
+      "name": "doctor",
+      "description": "Read-only diagnostics in the family cmdrvl.doctor.v1 shape",
+      "status": "available",
+      "actions": [
+        { "name": "health", "usage": "redline doctor [--json]" },
+        { "name": "capabilities", "usage": "redline doctor capabilities --json" },
+        { "name": "triage", "usage": "redline doctor triage --json" },
+        { "name": "robot-docs", "usage": "redline doctor robot-docs" },
+        { "name": "fix", "usage": "redline doctor --fix" }
+      ],
+      "current_runtime_behavior": {
+        "read_only": true,
+        "fix_mode": "not_available",
+        "network": "not_used",
+        "success_exit_code": 0,
+        "unhealthy_exit_code": 1,
+        "usage_error_exit_code": 2,
+        "writes_witness": false
+      }
+    }
+  ],
+  "exit_codes": {
+    "0": {
+      "meaning": "NO_SEMANTIC_CHANGE (or CHANGES_FOUND with --exit-zero-on-change; doctor: healthy)",
+      "domain": "positive"
+    },
+    "1": {
+      "meaning": "CHANGES_FOUND (doctor: unhealthy)",
+      "domain": "expected_change"
+    },
+    "2": {
+      "meaning": "REFUSAL / CLI error",
+      "domain": "error"
+    }
+  },
+  "refusals": [
+    { "code": "E_IO", "message": "Cannot read input file", "action": "escalate" },
+    { "code": "E_EMPTY_INPUT", "message": "Input is empty", "action": "escalate" },
+    {
+      "code": "E_BINARY_INPUT",
+      "message": "Input is not UTF-8 text (PDF, image, UTF-16). Extract text upstream and diff the extracted text.",
+      "action": "escalate"
+    },
+    {
+      "code": "E_MODE_UNSUPPORTED",
+      "message": "Mode is not available in this release",
+      "action": "retry_with_flag",
+      "flag": "--mode"
+    },
+    {
+      "code": "E_MODE_AMBIGUOUS",
+      "message": "The two inputs look like different formats; auto mode will not guess",
+      "action": "retry_with_flag",
+      "flag": "--mode"
+    }
+  ],
+  "env_vars": [
+    {
+      "name": "EPISTEMIC_WITNESS",
+      "description": "Overrides the witness ledger path for comparison runs and witness queries; doctor commands do not write it.",
+      "default": "~/.cmdrvl/state/witness/witness.jsonl"
+    },
+    {
+      "name": "HOME",
+      "description": "Locates the default witness ledger."
+    },
+    {
+      "name": "SOURCE_DATE_EPOCH",
+      "description": "When set, witness timestamps use it instead of the clock."
+    },
+    {
+      "name": "NO_COLOR",
+      "description": "When non-empty, help and error text carry no ANSI colour."
+    }
+  ],
+  "formats": ["text", "html", "xhtml"],
+  "side_effects": {
+    "reads_files": true,
+    "writes_files": true,
+    "network": false,
+    "writes_witness": true,
+    "notes": "Comparison runs append one witness record unless --no-witness. capabilities, robot-docs, doctor and witness queries are read-only."
+  },
+  "capabilities": {
+    "modes": ["auto", "raw", "whitespace", "html-text"],
+    "planned_modes": ["markdown", "xml-text", "docx"],
+    "hunk_classes": ["formatting_only", "clause_added", "clause_removed", "numeric_changed", "text_modified"],
+    "span_convention": "half-open raw byte ranges [start, end) into the original input files",
+    "redaction": {
+      "default": "redacted",
+      "reveal_flag": "--explicit",
+      "hunk_digest": "blake3 keyed hash of the span bytes; key derived from the whole input file"
+    },
+    "deterministic": true,
+    "streaming": false,
+    "witness": {
+      "ambient_recording": "enabled_by_default",
+      "query_subcommands": "available",
+      "no_witness_flag": "suppresses_recording"
+    }
+  },
+  "agent_surfaces": {
+    "global_json": {
+      "command": "redline --json <old> <new>",
+      "output": "redline.report.v1 JSON report",
+      "stdout": "single JSON object",
+      "stderr": "process-level failures only"
+    },
+    "doctor": { "command": "redline doctor --json", "output": "cmdrvl.doctor.v1 health report", "mutates": false },
+    "doctor_triage": { "command": "redline doctor triage --json", "output": "cmdrvl.doctor.v1 triage report", "mutates": false },
+    "doctor_capabilities": { "command": "redline doctor capabilities --json", "output": "cmdrvl.doctor.v1 report with the operator contract", "mutates": false },
+    "robot_triage": { "command": "redline --robot-triage", "output": "alias of redline doctor triage --json", "mutates": false },
+    "capabilities": { "command": "redline capabilities --json", "output": "operator.v1 contract (identical to --describe)", "mutates": false },
+    "robot_docs": { "command": "redline robot-docs guide", "output": "markdown agent guide", "mutates": false },
+    "set_e_safe": {
+      "command": "redline <old> <new> --exit-zero-on-change",
+      "output": "exit 0 on CHANGES_FOUND; refusals still exit 2",
+      "mutates": true
+    }
+  },
+  "fix_mode": {
+    "available": false,
+    "command": "redline doctor --fix",
+    "behavior": "exits 2, emits only stderr, and names read-only alternatives"
+  },
+  "composition": {
+    "family": { "name": "cmdrvl-spine", "siblings": ["lock", "verify", "pack", "rvl", "shape"] },
+    "role": "prose_change_locator",
+    "position": "after_lock_before_verify",
+    "accepts": [
+      { "kind": "document_pair", "description": "Two versions of a UTF-8 text or HTML document" }
+    ],
+    "produces": [
+      { "kind": "redline_report", "schema": "redline.report.v1", "command": "redline <old> <new> --json" }
+    ],
+    "agent_rules": [
+      "Spans index the original files. Slice the file at the span to read a change.",
+      "Treat formatting_only hunks as noise unless markup matters to the task.",
+      "Do not infer meaning from the class alone; read the span, then ground claims with verify.",
+      "For tables and spreadsheets use shape and rvl, not redline."
+    ]
+  },
+  "pipeline": {
+    "upstream": ["lock"],
+    "downstream": ["verify", "pack"]
+  }
+}
