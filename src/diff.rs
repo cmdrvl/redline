@@ -122,11 +122,26 @@ fn matched_blocks(sides: &Sides<'_>) -> Vec<(usize, usize)> {
     pairs
 }
 
-/// Word-level diff of one region between anchors.
+/// Regions with more tokens than this, both sides together, are split on
+/// unique words before the word diff runs.
+const ANCHOR_THRESHOLD: usize = 4096;
+
+/// A piece with about this many tokens on each side that still has no unique
+/// word in common is reported as one replacement. The word diff is quadratic
+/// on such input (the only tokens the sides share are spaces and very common
+/// words), and an alignment of two long texts with no distinctive word in
+/// common would mean nothing anyway.
+const REPLACE_THRESHOLD: usize = 4096;
+
+/// Word-level diff of one region between matched blocks.
 ///
 /// The `context` tokens before each range are known to be equal on both
 /// sides. They take part in the diff so that an insertion or removal at the
 /// start of the region can slide back onto a sentence boundary.
+///
+/// A small region goes straight to the word diff. A large one is first cut
+/// at words that occur exactly once on each side (the patience method), which
+/// keeps the cost near linear however much of the region changed.
 fn diff_region(
     sides: &Sides<'_>,
     context: usize,
@@ -137,6 +152,136 @@ fn diff_region(
     if sides.old_ids[old_range.clone()] == sides.new_ids[new_range.clone()] {
         return;
     }
+    if old_range.len() + new_range.len() <= ANCHOR_THRESHOLD {
+        diff_tokens(sides, context, old_range, new_range, changes);
+        return;
+    }
+
+    // Tokens known equal immediately before the current piece.
+    let mut run = context;
+    let mut old_cursor = old_range.start;
+    let mut new_cursor = new_range.start;
+    let ends = (old_range.end, new_range.end);
+    for (old_anchor, new_anchor) in unique_anchors(sides, old_range, new_range)
+        .into_iter()
+        .chain([ends])
+    {
+        let old_piece = old_cursor..old_anchor;
+        let new_piece = new_cursor..new_anchor;
+        if sides.old_ids[old_piece.clone()] == sides.new_ids[new_piece.clone()] {
+            run += old_piece.len() + 1;
+        } else {
+            diff_piece(
+                sides,
+                run.min(MAX_SLIDE as usize),
+                old_piece,
+                new_piece,
+                changes,
+            );
+            run = 1;
+        }
+        old_cursor = old_anchor + 1;
+        new_cursor = new_anchor + 1;
+    }
+}
+
+/// Positions of the words that occur exactly once in each range, as pairs in
+/// increasing order on both sides: the longest such chain.
+fn unique_anchors(
+    sides: &Sides<'_>,
+    old_range: Range<usize>,
+    new_range: Range<usize>,
+) -> Vec<(usize, usize)> {
+    // Per token id: occurrences and last position, on each side.
+    let mut seen: HashMap<u32, (u32, usize, u32, usize)> = HashMap::new();
+    for index in old_range.clone() {
+        if sides.old.tokens[index].kind == TokenKind::Word {
+            let entry = seen.entry(sides.old_ids[index]).or_default();
+            entry.0 += 1;
+            entry.1 = index;
+        }
+    }
+    for index in new_range {
+        if sides.new.tokens[index].kind == TokenKind::Word {
+            let entry = seen.entry(sides.new_ids[index]).or_default();
+            entry.2 += 1;
+            entry.3 = index;
+        }
+    }
+    // Walk the old side in order, so the result does not depend on the
+    // iteration order of the map.
+    let pairs: Vec<(usize, usize)> = old_range
+        .filter_map(|index| match seen.get(&sides.old_ids[index]) {
+            Some(&(1, old_at, 1, new_at)) if old_at == index => Some((old_at, new_at)),
+            _ => None,
+        })
+        .collect();
+
+    // Longest increasing subsequence on the new position (patience sorting).
+    // `tails[k]` is the pair ending the best chain of length k + 1.
+    let mut tails: Vec<usize> = Vec::new();
+    let mut previous: Vec<Option<usize>> = vec![None; pairs.len()];
+    for (at, pair) in pairs.iter().enumerate() {
+        let slot = tails.partition_point(|&tail| pairs[tail].1 < pair.1);
+        previous[at] = slot.checked_sub(1).map(|before| tails[before]);
+        if slot == tails.len() {
+            tails.push(at);
+        } else {
+            tails[slot] = at;
+        }
+    }
+    let mut chain = Vec::with_capacity(tails.len());
+    let mut cursor = tails.last().copied();
+    while let Some(at) = cursor {
+        chain.push(pairs[at]);
+        cursor = previous[at];
+    }
+    chain.reverse();
+    chain
+}
+
+/// Diff one piece between unique-word anchors.
+fn diff_piece(
+    sides: &Sides<'_>,
+    context: usize,
+    old_range: Range<usize>,
+    new_range: Range<usize>,
+    changes: &mut Vec<Change>,
+) {
+    // The word diff costs about the product of the two lengths in the worst
+    // case, so a long side against a short one is still cheap.
+    if old_range.len().saturating_mul(new_range.len()) <= REPLACE_THRESHOLD * REPLACE_THRESHOLD {
+        diff_tokens(sides, context, old_range, new_range, changes);
+        return;
+    }
+    // One replacement, less whatever the two sides share at each end.
+    let old_ids = &sides.old_ids[old_range.clone()];
+    let new_ids = &sides.new_ids[new_range.clone()];
+    let prefix = old_ids
+        .iter()
+        .zip(new_ids)
+        .take_while(|(old, new)| old == new)
+        .count();
+    let suffix = old_ids[prefix..]
+        .iter()
+        .rev()
+        .zip(new_ids[prefix..].iter().rev())
+        .take_while(|(old, new)| old == new)
+        .count();
+    changes.push(Change {
+        old: old_range.start + prefix..old_range.end - suffix,
+        new: new_range.start + prefix..new_range.end - suffix,
+    });
+}
+
+/// The word diff itself, over one bounded stretch of tokens.
+fn diff_tokens(
+    sides: &Sides<'_>,
+    context: usize,
+    old_range: Range<usize>,
+    new_range: Range<usize>,
+    changes: &mut Vec<Change>,
+) {
     let old_start = old_range.start - context;
     let new_start = new_range.start - context;
 
@@ -180,8 +325,11 @@ fn diff_region(
         };
         // A sentence added at the end of a paragraph can be read as taking
         // the space before it or the paragraph break after it. Prefer the
-        // reading that leaves the paragraph break alone.
-        let keeps_block_break = |end: &u32| !doc.tokens[base + *end as usize - 1].block_end;
+        // reading that leaves the paragraph break alone. In line mode the
+        // newline belongs to its line, so there the preference is reversed:
+        // an added line is the line and its newline.
+        let keeps_block_break =
+            |end: &u32| doc.tokens[base + *end as usize - 1].block_end == doc.line_mode;
         (lowest..=hunk.end)
             .rev()
             .find(|end| covers_clause(end) && keeps_block_break(end))
@@ -217,14 +365,20 @@ fn merge_adjacent(old: &TokenDoc, new: &TokenDoc, changes: Vec<Change>) -> Vec<C
             .filter(|token| token.kind == TokenKind::Word)
             .count()
     };
-    let size = |change: &Change| words(old, change.old.clone()).max(words(new, change.new.clone()));
     let is_clause = |change: &Change| {
         (change.old.is_empty() && is_whole_clause(new, change.new.clone()))
             || (change.new.is_empty() && is_whole_clause(old, change.old.clone()))
     };
 
     let mut merged: Vec<Change> = Vec::with_capacity(changes.len());
+    // Word counts of the last merged change on each side, kept as a running
+    // total. Recounting it would make a fully rewritten document quadratic.
+    let mut last_words = (0usize, 0usize);
     for change in changes {
+        let change_words = (
+            words(old, change.old.clone()),
+            words(new, change.new.clone()),
+        );
         if let Some(last) = merged.last_mut() {
             let old_gap = last.old.end..change.old.start;
             let new_gap = last.new.end..change.new.start;
@@ -234,7 +388,8 @@ fn merge_adjacent(old: &TokenDoc, new: &TokenDoc, changes: Vec<Change>) -> Vec<C
                 .all(|token| !token.block_end);
             let gap_words = words(old, old_gap.clone());
             let punctuation_only = gap_words == 0 && old_gap.len() <= MAX_MERGE_GAP;
-            let coincidence = gap_words <= size(last) && gap_words <= size(&change);
+            let coincidence = gap_words <= last_words.0.max(last_words.1)
+                && gap_words <= change_words.0.max(change_words.1);
             let joinable = same_block
                 && (punctuation_only || coincidence)
                 && !is_clause(last)
@@ -242,9 +397,12 @@ fn merge_adjacent(old: &TokenDoc, new: &TokenDoc, changes: Vec<Change>) -> Vec<C
             if joinable {
                 last.old.end = change.old.end;
                 last.new.end = change.new.end;
+                last_words.0 += gap_words + change_words.0;
+                last_words.1 += gap_words + change_words.1;
                 continue;
             }
         }
+        last_words = change_words;
         merged.push(change);
     }
     merged

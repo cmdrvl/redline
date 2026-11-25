@@ -250,7 +250,7 @@ fn refusals_are_json_on_stdout_or_text_on_stderr_and_exit_2() {
 #[test]
 fn refusal_hints_are_runnable() {
     let sandbox = Sandbox::new();
-    let text = sandbox.write("plain.txt", b"<p>Rate is 5.25%.</p>\n");
+    let text = sandbox.write("plain.txt", b"The <b>rate</b> is 5.25%.\n");
     let report = json(&sandbox.run(&[&text, NEW, "--json"]));
     let next = report["refusal"]["next_command"].as_str().unwrap();
     assert!(next.ends_with("--mode html-text"), "{next}");
@@ -259,6 +259,61 @@ fn refusal_hints_are_runnable() {
     let parts: Vec<&str> = next.split(' ').skip(1).collect();
     let rerun = sandbox.run(&parts);
     assert_eq!(rerun.status.code(), Some(1), "{}", stderr(&rerun));
+}
+
+/// A suggested command is meant to be run as given, so a path with spaces or
+/// shell syntax in it must arrive as one quoted word.
+#[test]
+fn refusal_hints_quote_awkward_paths() {
+    let sandbox = Sandbox::new();
+    let spaced = sandbox.write("my page.txt", b"plain text\n");
+    let report = json(&sandbox.run(&[&spaced, NEW, "--json"]));
+    let next = report["refusal"]["next_command"].as_str().unwrap();
+    assert!(next.contains(&format!("'{spaced}'")), "{next}");
+
+    let hostile = sandbox.write("x; echo PWNED #.pdf", b"%PDF-1.7\n\xff\xfe");
+    let report = json(&sandbox.run(&[&hostile, NEW, "--json"]));
+    let next = report["refusal"]["next_command"].as_str().unwrap();
+    assert_eq!(
+        next,
+        format!("pdftotext -layout '{hostile}' '{hostile}'.txt"),
+        "the path must be quoted wherever it appears"
+    );
+
+    let quoted = sandbox.write("it's.txt", b"plain text\n");
+    let report = json(&sandbox.run(&[&quoted, NEW, "--json"]));
+    let next = report["refusal"]["next_command"].as_str().unwrap();
+    assert!(next.contains("it'\\''s.txt'"), "{next}");
+}
+
+/// After `--`, an argument is a file name even if it is spelled like a flag.
+#[test]
+fn arguments_after_a_double_dash_are_files() {
+    let sandbox = Sandbox::new();
+    let output = sandbox.run(&["--json", "--no-witness", "--", OLD, "--schema"]);
+    assert_eq!(output.status.code(), Some(2));
+    assert_eq!(json(&output)["refusal"]["code"], "E_IO");
+    assert_eq!(json(&output)["refusal"]["detail"]["path"], "--schema");
+}
+
+/// One damaged line in the shared ledger must not hide the records around it
+/// or break the chain.
+#[test]
+fn a_damaged_ledger_line_is_skipped() {
+    let sandbox = Sandbox::new();
+    sandbox.run(&[OLD, NEW, "--json"]);
+    let mut ledger = std::fs::read(sandbox.ledger()).unwrap();
+    ledger.extend_from_slice(b"\xff\xfe not utf-8 \x80\n");
+    std::fs::write(sandbox.ledger(), &ledger).unwrap();
+    sandbox.run(&[OLD, OLD, "--json"]);
+
+    let count = sandbox.run(&["witness", "count"]);
+    assert_eq!(count.status.code(), Some(0), "{}", stderr(&count));
+    assert_eq!(stdout(&count).trim(), "2");
+    let all = json(&sandbox.run(&["witness", "query", "--json"]));
+    let records = all.as_array().unwrap();
+    assert_eq!(records.len(), 2);
+    assert_eq!(records[0]["outcome"], "NO_SEMANTIC_CHANGE", "newest first");
 }
 
 #[test]

@@ -106,6 +106,7 @@ Do not invent behavior that is not in the spec. Where the spec is silent or cont
 | `src/cli/` | CLI behind the `cli` feature: args, human output, witness, doctor |
 | `src/main.rs` | Entry point |
 | `tests/invariants.rs` | Property tests for the SPEC section 6 invariants |
+| `tests/regressions.rs` | Defects found in review, one test each: missed changes in broken HTML, cost bounds, classification |
 | `tests/cli.rs` | Binary tests, each in a scratch `HOME` and ledger |
 | `tests/golden_rules.rs` | The shared spine-rules suite |
 | `operator.json` | Machine-readable operator contract |

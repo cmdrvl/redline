@@ -24,6 +24,28 @@ pub(super) fn scan(source: &str, builder: &mut Builder) {
     scan_range(source, start..source.len(), builder, |_, _, _| None);
 }
 
+/// True when `line` opens with a list marker followed by a space: a bullet
+/// (`-`, `*`, `+`, `•`), a number (`1.`, `12)`) or a parenthesised label
+/// (`(a)`, `(iv)`).
+fn starts_list_item(line: &str) -> bool {
+    let after_marker = if let Some(rest) = line.strip_prefix(['-', '*', '+', '\u{2022}']) {
+        rest
+    } else if let Some(rest) = line.strip_prefix('(') {
+        let label = rest.bytes().take_while(u8::is_ascii_alphanumeric).count();
+        match rest[label..].strip_prefix(')') {
+            Some(rest) if (1..=4).contains(&label) => rest,
+            _ => return false,
+        }
+    } else {
+        let digits = line.bytes().take_while(u8::is_ascii_digit).count();
+        match line[digits..].strip_prefix(['.', ')']) {
+            Some(rest) if (1..=3).contains(&digits) => rest,
+            _ => return false,
+        }
+    };
+    after_marker.starts_with([' ', '\t'])
+}
+
 /// Scan `source[range]` as text: whitespace runs become separators, the rest
 /// is copied verbatim.
 ///
@@ -64,7 +86,10 @@ pub(super) fn scan_range(
                 }
                 pos = next;
             }
-            builder.separator(ws_start..pos, breaks >= 2);
+            // A blank line starts a new block. So does a line that opens with
+            // a list marker: each item of a list is its own block.
+            let block = breaks >= 2 || (breaks == 1 && starts_list_item(&source[pos..limit]));
+            builder.separator(ws_start..pos, block);
             run_start = pos;
             continue;
         }

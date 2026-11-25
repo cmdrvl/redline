@@ -81,8 +81,25 @@ impl Input<'_> {
         }
     }
 
+    /// The path as one shell word, for use in a suggested command.
     fn label(&self, fallback: &str) -> String {
-        self.path.unwrap_or(fallback).to_owned()
+        shell_word(self.path.unwrap_or(fallback))
+    }
+}
+
+/// Quote `text` so a POSIX shell reads it as a single literal argument. A
+/// suggested command is meant to be run as given, and a path may hold spaces
+/// or shell syntax.
+fn shell_word(text: &str) -> String {
+    let plain = !text.is_empty()
+        && !text.starts_with('-')
+        && text
+            .chars()
+            .all(|ch| ch.is_ascii_alphanumeric() || "_-./+=:,@%".contains(ch));
+    if plain {
+        text.to_owned()
+    } else {
+        format!("'{}'", text.replace('\'', "'\\''"))
     }
 }
 

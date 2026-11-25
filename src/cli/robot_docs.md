@@ -31,15 +31,15 @@ set -e safety:
 - Refusals still exit 2.
 
 Modes (--mode):
-- auto (default): html-text when an input looks like HTML or XHTML, otherwise whitespace. Refuses with E_MODE_AMBIGUOUS when the two inputs look different.
+- auto (default): html-text when an input opens like an HTML or XHTML document (a doctype or a common HTML start tag, EDGAR wrapper lines allowed in front), otherwise whitespace. Refuses with E_MODE_AMBIGUOUS when the two inputs look different.
 - raw: every byte counts.
 - whitespace: runs of whitespace collapse to one space; re-wrapping is not a change.
-- html-text: markup, comments, scripts, styles, <head> and the hidden Inline XBRL header are dropped; entities are decoded; whitespace collapses.
+- html-text: markup, comments, scripts, styles, the document title and the hidden Inline XBRL header are dropped; entities are decoded; whitespace collapses.
 
 Reading the report (redline.report.v1):
 - `outcome`: NO_SEMANTIC_CHANGE, CHANGES_FOUND or REFUSAL.
 - `hunks[].old_span` and `new_span`: half-open byte ranges [start, end) into the ORIGINAL files, not the normalized text. An empty span marks a position: text was inserted or removed there.
-- `hunks[].class`: formatting_only (raw bytes differ, text identical), clause_added, clause_removed (whole sentences or blocks), numeric_changed (an edit that alters a number), text_modified (any other edit).
+- `hunks[].class`: formatting_only (raw bytes differ, text identical), clause_added, clause_removed (whole sentences or blocks), numeric_changed (an edit that alters a number or the sign, unit, month or magnitude word attached to one), text_modified (any other edit).
 - `hunks[].numeric`: true when the hunk adds, removes or alters a number, whatever its class.
 - `summary.churn_ratio`: share of all tokens that sit inside semantic hunks.
 - To read a change, slice the original file at the span. Skip formatting_only hunks unless markup matters to you.

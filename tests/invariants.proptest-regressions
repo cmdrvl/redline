@@ -1,0 +1,9 @@
+# Seeds for failure cases proptest has generated in the past. It is
+# automatically read and these particular cases re-run before any
+# novel cases are generated.
+#
+# It is recommended to check this file in to source control so that
+# everyone who runs the test benefits from these saved cases.
+cc 4c083c075e40c6ecc676c20b776dbfdf9f4637e8ad2e2bf4adf70ff059761ee1 # shrinks to (old, new) = ("Qzjoule Qzcedar.", "Qzalpha Qzcedar.\n\nQzjoule Qzalpha.")
+cc a0c81d1e886021b0f6983566d102b5813ac4332aea7072e519cd9d222ce15c15 # shrinks to (old, new) = ("Qzember.\n\nQzalpha Qzalpha.", "Qzalpha Qzember.")
+cc b66e7daa1705f65c19d7a993644a4b120085da009360379024d3c8c1fa7730c9 # shrinks to (old, new) = ("<", "<<![CDATA[</<")

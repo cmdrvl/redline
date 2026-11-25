@@ -248,6 +248,16 @@ fn check_spans(old: &str, new: &str, mode: Mode, report: &Report) -> Result<(), 
 
         if hunk.class == HunkClass::FormattingOnly {
             prop_assert_ne!(old_slice, new_slice, "formatting hunk with equal raw bytes");
+        }
+        // Re-reading a slice on its own only works where markup means the
+        // same thing in and out of context. Inside literal-text content it
+        // does not: `<b>` is text in a `<textarea>` and a tag outside one.
+        // Those documents keep every check above; what their spans hold is
+        // pinned by `spans_inside_literal_text_cover_the_literal_bytes`.
+        if mode == Mode::HtmlText && (has_literal_text(old) || has_literal_text(new)) {
+            continue;
+        }
+        if hunk.class == HunkClass::FormattingOnly {
             prop_assert_eq!(
                 canonicalize(old_slice, mode, Edges::Document).text,
                 canonicalize(new_slice, mode, Edges::Document).text,
@@ -274,6 +284,49 @@ fn check_spans(old: &str, new: &str, mode: Mode, report: &Report) -> Result<(), 
         }
     }
     Ok(())
+}
+
+/// True when `source` opens an element or section whose content is literal
+/// text, where markup is not markup.
+fn has_literal_text(source: &str) -> bool {
+    let lower = source.to_ascii_lowercase();
+    ["<![cdata[", "<textarea", "<xmp", "<plaintext", "<title"]
+        .iter()
+        .any(|opener| lower.contains(opener))
+}
+
+/// Inside literal-text content a span still holds exactly the changed bytes.
+#[test]
+fn spans_inside_literal_text_cover_the_literal_bytes() {
+    let cases = [
+        (
+            "<p>a <![CDATA[x <b> y]]> c</p>",
+            "<p>a <![CDATA[x <i> y]]> c</p>",
+            "b",
+            "i",
+        ),
+        (
+            "<body><textarea>keep <em>old</em></textarea>",
+            "<body><textarea>keep <em>new</em></textarea>",
+            "old",
+            "new",
+        ),
+        (
+            "<body><xmp>&amp; one</xmp>z",
+            "<body><xmp>&amp; two</xmp>z",
+            "one",
+            "two",
+        ),
+    ];
+    for (old, new, old_bytes, new_bytes) in cases {
+        let report = run(old, new, Mode::HtmlText, true);
+        assert_eq!(report.hunks.len(), 1, "{old}");
+        let hunk = &report.hunks[0];
+        assert_eq!(&old[hunk.old_span[0]..hunk.old_span[1]], old_bytes);
+        assert_eq!(&new[hunk.new_span[0]..hunk.new_span[1]], new_bytes);
+        assert_eq!(hunk.old_text.as_deref(), Some(old_bytes));
+        assert_eq!(hunk.new_text.as_deref(), Some(new_bytes));
+    }
 }
 
 /// What the report for `(new, old)` must be, given the report for `(old, new)`.

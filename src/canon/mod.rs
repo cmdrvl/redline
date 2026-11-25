@@ -256,16 +256,78 @@ fn raw_identity(source: &str) -> CanonicalDoc {
     }
 }
 
-/// True when the first bytes look like an HTML or XHTML document.
+/// Elements an HTML document or fragment commonly opens with.
+const HTML_OPENERS: &[&str] = &[
+    "a", "article", "b", "body", "br", "center", "div", "font", "footer", "h1", "h2", "h3", "h4",
+    "h5", "h6", "head", "header", "hr", "html", "i", "link", "main", "meta", "nav", "ol", "p",
+    "pre", "script", "section", "span", "style", "table", "title", "ul",
+];
+
+/// The lines EDGAR wraps around each document of a filing. A document saved
+/// from EDGAR often still carries them in front of its HTML.
+const EDGAR_WRAPPER: &[&str] = &[
+    "<document>",
+    "<type>",
+    "<sequence>",
+    "<filename>",
+    "<description>",
+    "<text>",
+];
+
+/// True when the input opens the way an HTML or XHTML document does: after
+/// an optional byte order mark, XML declaration, comments and EDGAR wrapper
+/// lines, the first thing in it is `<!DOCTYPE html` or a well-known HTML
+/// start tag.
+///
+/// Mentioning a tag is not enough. Plain text that talks about `<head>` or
+/// `Vec<String>` must not be read as markup, because everything in angle
+/// brackets would then be hidden from the diff.
 pub fn looks_like_html(source: &str) -> bool {
-    let mut end = source.len().min(4096);
-    while !source.is_char_boundary(end) {
-        end -= 1;
+    let bytes = source.as_bytes();
+    let mut pos = if source.starts_with('\u{feff}') { 3 } else { 0 };
+    loop {
+        while bytes.get(pos).is_some_and(u8::is_ascii_whitespace) {
+            pos += 1;
+        }
+        let rest = &bytes[pos..];
+        let close: &[u8] = if rest.starts_with(b"<!--") {
+            b"-->"
+        } else if rest.starts_with(b"<?") {
+            b"?>"
+        } else if EDGAR_WRAPPER.iter().any(|tag| {
+            rest.get(..tag.len())
+                .is_some_and(|start| start.eq_ignore_ascii_case(tag.as_bytes()))
+        }) {
+            // One wrapper line; what matters is the document after `<TEXT>`.
+            b"\n"
+        } else {
+            break;
+        };
+        match rest.windows(close.len()).position(|window| window == close) {
+            Some(at) => pos += at + close.len(),
+            None => return false,
+        }
     }
-    let head = source[..end].to_ascii_lowercase();
-    ["<!doctype html", "<html", "<body", "<head"]
+    let rest = &bytes[pos..];
+    let doctype = b"<!doctype html";
+    if rest
+        .get(..doctype.len())
+        .is_some_and(|start| start.eq_ignore_ascii_case(doctype))
+    {
+        return true;
+    }
+    if rest.first() != Some(&b'<') {
+        return false;
+    }
+    let name_len = rest[1..]
         .iter()
-        .any(|needle| head.contains(needle))
+        .take_while(|byte| byte.is_ascii_alphanumeric())
+        .count();
+    let name = String::from_utf8_lossy(&rest[1..1 + name_len]).to_ascii_lowercase();
+    let terminated = rest
+        .get(1 + name_len)
+        .is_some_and(|byte| byte.is_ascii_whitespace() || matches!(byte, b'>' | b'/'));
+    terminated && HTML_OPENERS.contains(&name.as_str())
 }
 
 #[cfg(test)]
@@ -387,6 +449,112 @@ mod tests {
     fn html_detection() {
         assert!(looks_like_html("<!DOCTYPE HTML><p>x"));
         assert!(looks_like_html("<?xml version='1.0'?>\n<html xmlns=\"x\">"));
+        assert!(looks_like_html("\u{feff}\n<!-- c -->\n<HTML>\n<body>"));
+        assert!(looks_like_html("<div class=\"a\"><p>x</p></div>"));
         assert!(!looks_like_html("plain text with a < b"));
+    }
+
+    #[test]
+    fn text_that_mentions_tags_is_not_html() {
+        assert!(!looks_like_html(
+            "Notes: the <head> block.\nPayment is $100.\n"
+        ));
+        assert!(!looks_like_html(
+            "Notes on <html> docs.\nUse Vec<String> here.\n"
+        ));
+        assert!(looks_like_html(
+            "<DOCUMENT>\n<TYPE>10-K\n<SEQUENCE>1\n<FILENAME>a.htm\n<TEXT>\n<!DOCTYPE html PUBLIC \"x\">"
+        ));
+        assert!(!looks_like_html(
+            "<DOCUMENT>\n<TYPE>8-K\n<TEXT>\nPlain text press release\n"
+        ));
+        assert!(!looks_like_html("<!-- never closed <html>"));
+    }
+
+    // The cases below were each a missed change: the scanner hid text that a
+    // browser renders, so an edit to it was reported as formatting only.
+
+    fn html(source: &str) -> String {
+        doc(source, Mode::HtmlText).text
+    }
+
+    #[test]
+    fn html_text_in_head_is_rendered() {
+        assert_eq!(html("<html><head>Visible text"), "Visible text");
+        assert_eq!(
+            html("<head><meta charset=utf-8>Price 100 dollars</html>"),
+            "Price 100 dollars"
+        );
+        assert_eq!(html("<head></p>alpha</div>more"), "alpha more");
+        assert_eq!(html("<head><noscript><p>alpha</p>"), "alpha");
+        assert_eq!(html("<head lang=en>shown"), "shown");
+    }
+
+    #[test]
+    fn html_head_tag_after_body_content_is_ignored() {
+        assert_eq!(
+            html("<body><p>intro</p><head>Rate is 5%<p>x</p></body>"),
+            "intro Rate is 5% x"
+        );
+        assert_eq!(html("<html>pre<head>OLD<body>z"), "preOLD z");
+        assert_eq!(
+            html("<p>a</p><head><title>T</title>b"),
+            "a Tb",
+            "a title outside the document head is shown"
+        );
+    }
+
+    #[test]
+    fn html_comment_closed_by_bang_ends_there() {
+        assert_eq!(
+            html("<p>a</p><!-- x --!>VISIBLE<!-- y --><p>b</p>"),
+            "a VISIBLE b"
+        );
+        assert_eq!(html("<p>a<!----!>one<!-- -->"), "aone");
+        assert_eq!(html("a<!-- - -- x -->b"), "ab");
+        assert_eq!(html("a<!-- never closed"), "a");
+    }
+
+    #[test]
+    fn html_markup_inside_text_elements_is_literal() {
+        assert_eq!(
+            html("<body><textarea><b>x</b> &amp; y</textarea>z"),
+            "<b>x</b> & yz"
+        );
+        assert_eq!(html("<body><xmp><i>x</i> &amp;</xmp>z"), "<i>x</i> &amp; z");
+        assert_eq!(
+            html("<p>a</p><plaintext><b>x</b></plaintext>"),
+            "a <b>x</b></plaintext>"
+        );
+        assert_eq!(html("<body><textarea><!-- old -->"), "<!-- old -->");
+    }
+
+    #[test]
+    fn html_unclosed_xbrl_header_does_not_swallow_the_document() {
+        assert_eq!(html("<body><ix:header>a</ix:hidden>OLD text"), "aOLD text");
+        assert_eq!(html("<body><ix:header a=b/>OLD text"), "OLD text");
+        assert_eq!(html("<body><ix:header/>shown"), "shown");
+    }
+
+    #[test]
+    fn html_script_and_style_hide_to_the_end_when_unclosed() {
+        assert_eq!(html("a<script>var x = 1;"), "a");
+        assert_eq!(html("a<script/>hidden</script>b"), "ab");
+        assert_eq!(html("a<STYLE>p{}</Style >b"), "ab");
+    }
+
+    #[test]
+    fn html_cdata_content_is_text() {
+        assert_eq!(
+            html("<p>a <![CDATA[x < y &amp;]]> b</p>"),
+            "a x < y &amp; b"
+        );
+        assert_eq!(html("<p>a<![CDATA[open"), "aopen");
+    }
+
+    #[test]
+    fn html_bogus_end_tags_are_dropped() {
+        assert_eq!(html("a</>b</ x>c</3 >d"), "abcd");
+        assert_eq!(html("a</"), "a</");
     }
 }

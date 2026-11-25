@@ -96,10 +96,10 @@ Swapping the two inputs gives the mirror-image report: same spans, `clause_added
 
 | `--mode` | What is ignored | Use for |
 | :--- | :--- | :--- |
-| `auto` (default) | Picks `html-text` when an input looks like HTML or XHTML, otherwise `whitespace`. Refuses if the two inputs look different. | Most runs |
+| `auto` (default) | Picks `html-text` when an input opens like an HTML or XHTML document (EDGAR wrapper lines are allowed in front), otherwise `whitespace`. Refuses if the two inputs look different. | Most runs |
 | `raw` | Nothing. Every byte counts. | Config files, anything where whitespace matters |
 | `whitespace` | Runs of whitespace collapse to one space. Re-wrapping is not a change. A blank line is a paragraph break. | Plain text, extracted PDF text |
-| `html-text` | Tags, attributes, comments, `<script>`, `<style>`, `<head>` and the hidden Inline XBRL header (`<ix:header>`). Entities are decoded. Whitespace collapses. | SEC filings, web pages, HTML contracts |
+| `html-text` | Tags, attributes, comments, `<script>`, `<style>`, the document title and the hidden Inline XBRL header (`<ix:header>`). Entities are decoded. Whitespace collapses. | SEC filings, web pages, HTML contracts |
 
 ### Hunk classes
 
@@ -107,7 +107,7 @@ Swapping the two inputs gives the mirror-image report: same spans, `clause_added
 | :--- | :--- |
 | `formatting_only` | Raw bytes differ, normalized text is identical. Not a semantic change. |
 | `clause_added` / `clause_removed` | One or more whole sentences or paragraphs exist on only one side. |
-| `numeric_changed` | An edit inside a sentence that changes the sequence of numbers in it. |
+| `numeric_changed` | An edit inside a sentence that changes a number, or the sign, unit, month or magnitude word attached to one (`$5 million` to `$5 billion`). |
 | `text_modified` | Any other edit inside a sentence. |
 
 Every hunk also carries `numeric: true` when it adds, removes or alters a number, whatever its class. An added sentence that contains a dollar amount is `clause_added` with `numeric: true`.
@@ -303,7 +303,8 @@ With `--json` a refusal is the same report object on stdout with `outcome: "REFU
 - **Everything shows as changed.** The two files are probably different renderings (one HTML, one text) or the document was reordered. Check `--mode`, and see Limitations on moved text.
 - **Exit 1 breaks my script.** That is `CHANGES_FOUND`. Use `--exit-zero-on-change`.
 - **A curly quote became a straight quote and it counts as a change.** It is one: the characters differ. redline does not fold typography.
-- **Hidden text is being diffed.** Only `<head>`, `<script>`, `<style>` and `<ix:header>` are skipped. Text hidden with CSS (`display:none`) is still text to redline.
+- **Hidden text is being diffed.** Only `<script>`, `<style>`, the head's `<title>` and a properly closed `<ix:header>` are skipped. Text hidden with CSS (`display:none`) is still text to redline. When markup is broken, redline keeps text a browser might hide; it would sooner report a change nobody sees than miss one somebody reads.
+- **`auto` picked `whitespace` for my HTML.** The file does not open with a doctype or a common HTML tag. Pass `--mode html-text`.
 - **`redline: witness: ...` on stderr.** The ledger could not be written. The result is still correct. Run `redline doctor triage` or pass `--no-witness`.
 
 ## Limitations
@@ -313,7 +314,8 @@ This is the first release. The design in [`docs/SPEC.md`](./docs/SPEC.md) is lar
 - **Not yet built:** Markdown, XML and `.docx` modes; `--region` / `--section` targeting and section labels on hunks; `--lock` verification of inputs against a lockfile. Asking for one of the planned modes is refused with `E_MODE_UNSUPPORTED`.
 - **Moved text** is reported as a removal in one place and an addition in another. There is no move detection.
 - **Formatting hunks are coarse.** One `formatting_only` hunk covers each unchanged stretch that has any markup difference, from the first differing byte to the last. Use `--mode raw` to see every byte-level difference.
-- **HTML is scanned, not parsed into a tree.** Markup boundaries follow the HTML standard's tokenizer rules, but nesting is not modeled, and CSS is not read.
+- **HTML is scanned, not parsed into a tree.** Markup boundaries follow the HTML standard's tokenizer rules, but nesting is not modeled, and CSS is not read. Text carried in attributes (`alt`, `value`, `title`) is markup and is not diffed.
+- **Huge rewrites are reported coarsely.** When several thousand consecutive words are replaced by several thousand others with no distinctive word in common, that stretch is one hunk. Nothing is dropped; the hunk is just large.
 - **Sentence boundaries** come from the Unicode segmentation rules, which can split after an abbreviation such as `U.S.`. That only affects whether an insertion is labeled `clause_added` or `text_modified`.
 - **No Unicode normalization.** `é` as one code point and as `e` plus a combining accent are different text.
 - **Inputs are read into memory.** Peak memory was about six times the combined input size on the 10-K pair above (63 MB for 11 MB of HTML).

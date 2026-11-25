@@ -5,8 +5,8 @@
 //! the file forms a hash chain.
 
 use std::env;
-use std::fs::{self, File, OpenOptions};
-use std::io::{BufRead, BufReader, Write};
+use std::fs::{self, OpenOptions};
+use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::time::{SystemTime, UNIX_EPOCH};
 
@@ -157,13 +157,12 @@ fn binary_hash() -> Option<String> {
 
 /// Id of the last record in the ledger, whichever tool wrote it.
 fn last_id(path: &Path) -> Option<String> {
-    let file = File::open(path).ok()?;
-    let last = BufReader::new(file)
-        .lines()
-        .map_while(Result::ok)
-        .filter(|line| !line.trim().is_empty())
-        .last()?;
-    let value: Value = serde_json::from_str(&last).ok()?;
+    // Read as bytes: a damaged line must not hide the records after it.
+    let bytes = std::fs::read(path).ok()?;
+    let last = bytes
+        .split(|&byte| byte == b'\n')
+        .rfind(|line| !line.trim_ascii().is_empty())?;
+    let value: Value = serde_json::from_slice(last).ok()?;
     value.get("id")?.as_str().map(str::to_owned)
 }
 
@@ -211,18 +210,15 @@ fn format_utc(seconds: u64) -> String {
 /// Records in the ledger that parse, oldest first. Lines written in a shape
 /// this tool does not know are skipped, not treated as errors.
 fn read_records() -> std::io::Result<Vec<WitnessRecord>> {
-    let file = match File::open(ledger_path()) {
-        Ok(file) => file,
+    let bytes = match std::fs::read(ledger_path()) {
+        Ok(bytes) => bytes,
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(Vec::new()),
         Err(error) => return Err(error),
     };
-    let mut records = Vec::new();
-    for line in BufReader::new(file).lines() {
-        if let Ok(record) = serde_json::from_str::<WitnessRecord>(&line?) {
-            records.push(record);
-        }
-    }
-    Ok(records)
+    Ok(bytes
+        .split(|&byte| byte == b'\n')
+        .filter_map(|line| serde_json::from_slice::<WitnessRecord>(line).ok())
+        .collect())
 }
 
 fn matches(record: &WitnessRecord, filter: &WitnessFilter) -> bool {

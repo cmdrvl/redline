@@ -38,7 +38,13 @@ pub fn run() -> u8 {
 
 fn dispatch(argv: Vec<std::ffi::OsString>) -> std::io::Result<u8> {
     // These three work with no other arguments and win over everything else.
-    let has = |flag: &str| argv.iter().skip(1).any(|arg| arg == flag);
+    // Everything after a bare `--` is a file name, whatever it looks like.
+    let has = |flag: &str| {
+        argv.iter()
+            .skip(1)
+            .take_while(|arg| *arg != "--")
+            .any(|arg| arg == flag)
+    };
     if has("--version") {
         println!("redline {}", env!("CARGO_PKG_VERSION"));
         return Ok(0);

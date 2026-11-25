@@ -24,6 +24,9 @@ pub struct Token {
     pub kind: TokenKind,
     /// Contains a digit.
     pub numeric: bool,
+    /// Changes what a neighbouring number means without containing a digit:
+    /// a sign, a currency or percent mark, a month, a magnitude word.
+    pub number_modifier: bool,
     /// First token of a sentence or block.
     pub sentence_start: bool,
     /// Last token before a block boundary (a line in `raw` mode).
@@ -47,6 +50,58 @@ pub struct Block {
 pub struct TokenDoc {
     pub tokens: Vec<Token>,
     pub blocks: Vec<Block>,
+    /// `raw` mode: blocks are lines and the newline ending one is content.
+    pub line_mode: bool,
+}
+
+/// Words and marks that change the meaning of the number next to them.
+const NUMBER_MODIFIERS: &[&str] = &[
+    "-",
+    "+",
+    "(",
+    ")",
+    "$",
+    "%",
+    "\u{2212}",
+    "\u{2013}",
+    "\u{20ac}",
+    "\u{a3}",
+    "\u{a5}",
+    "hundred",
+    "thousand",
+    "million",
+    "billion",
+    "trillion",
+    "percent",
+    "bps",
+    "january",
+    "february",
+    "march",
+    "april",
+    "may",
+    "june",
+    "july",
+    "august",
+    "september",
+    "october",
+    "november",
+    "december",
+    "jan",
+    "feb",
+    "mar",
+    "apr",
+    "jun",
+    "jul",
+    "aug",
+    "sep",
+    "sept",
+    "oct",
+    "nov",
+    "dec",
+];
+
+fn is_number_modifier(piece: &str) -> bool {
+    piece.len() <= 9 && NUMBER_MODIFIERS.contains(&piece.to_ascii_lowercase().as_str())
 }
 
 impl TokenDoc {
@@ -99,6 +154,7 @@ pub fn tokenize<'a>(doc: &'a CanonicalDoc, mode: Mode, interner: &mut Interner<'
             id: interner.intern(piece),
             kind,
             numeric: piece.chars().any(char::is_numeric),
+            number_modifier: is_number_modifier(piece),
             sentence_start: false,
             block_end,
             raw: doc.raw_span(canon.clone()),
@@ -126,7 +182,11 @@ pub fn tokenize<'a>(doc: &'a CanonicalDoc, mode: Mode, interner: &mut Interner<'
     }
 
     mark_sentence_starts(doc, &mut tokens, &blocks);
-    TokenDoc { tokens, blocks }
+    TokenDoc {
+        tokens,
+        blocks,
+        line_mode: mode == Mode::Raw,
+    }
 }
 
 /// Flag the first non-space token of every sentence, block by block.
