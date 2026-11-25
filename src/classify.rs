@@ -101,8 +101,15 @@ pub fn classify(
     new: &TokenDoc,
     new_range: Range<usize>,
 ) -> (HunkClass, bool) {
+    // A change that is only spacing has no modifier in it on either side.
+    let has_text = |doc: &TokenDoc, range: Range<usize>| {
+        doc.tokens[range]
+            .iter()
+            .any(|token| token.kind != TokenKind::Space)
+    };
     let numeric = numeric_ids(old, old_range.clone()) != numeric_ids(new, new_range.clone())
-        || (modifies_adjacent_number(old, old_range.clone())
+        || ((has_text(old, old_range.clone()) || has_text(new, new_range.clone()))
+            && modifies_adjacent_number(old, old_range.clone())
             && modifies_adjacent_number(new, new_range.clone()));
     let class = if old_range.is_empty() && is_whole_clause(new, new_range.clone()) {
         HunkClass::ClauseAdded

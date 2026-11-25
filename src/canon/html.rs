@@ -129,9 +129,19 @@ pub(super) fn scan(source: &str, builder: &mut Builder) {
                 pos = find_byte(bytes, pos, b'>').map_or(bytes.len(), |at| at + 1);
             }
             // `</` not followed by a letter is a bogus comment (`</>` is
-            // simply dropped): nothing up to the next `>` is rendered.
+            // simply dropped): nothing up to the next `>` is rendered. With
+            // no `>` at all a browser hides the rest of the document; that
+            // is broken markup, so the text is kept.
             Some(b'/') if !bytes.get(pos + 2).is_some_and(u8::is_ascii_alphabetic) => {
-                pos = find_byte(bytes, pos, b'>').map_or(bytes.len(), |at| at + 1);
+                match find_byte(bytes, pos, b'>') {
+                    Some(at) => pos = at + 1,
+                    None => {
+                        in_head = false;
+                        body_started = true;
+                        text::scan_range(source, pos..bytes.len(), builder, entities::decode);
+                        pos = bytes.len();
+                    }
+                }
             }
             _ => {
                 let tag = read_tag(source, pos);
@@ -160,9 +170,12 @@ pub(super) fn scan(source: &str, builder: &mut Builder) {
                 }
 
                 match name {
-                    // Code. Never rendered; an unclosed one runs to the end,
-                    // and a trailing `/` does not close it.
-                    "script" | "style" => {
+                    // Code. Never rendered; an unclosed one runs to the end.
+                    // `<script src="a.js"/>` is complete in XHTML, which is
+                    // what filings are, so a self-closed one hides nothing.
+                    // An HTML parser would hide what follows it; showing
+                    // that text is the safe side to be wrong on.
+                    "script" | "style" if !tag.self_closing => {
                         pos = end_tag(bytes, pos, name).map_or(bytes.len(), |(_, after)| after);
                     }
                     // The hidden Inline XBRL block. Unlike script and style
@@ -176,6 +189,9 @@ pub(super) fn scan(source: &str, builder: &mut Builder) {
                     // Content is text with character references; markup in
                     // it is literal. The document title is not rendered on
                     // the page, so a title in the head is dropped.
+                    // A title that is self-closed or never closed is treated
+                    // as an ordinary tag, so it cannot hide what follows.
+                    "title" if tag.self_closing || end_tag(bytes, pos, name).is_none() => {}
                     "title" | "textarea" => {
                         let (content_end, after) =
                             end_tag(bytes, pos, name).unwrap_or((bytes.len(), bytes.len()));

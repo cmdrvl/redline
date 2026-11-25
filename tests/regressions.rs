@@ -108,6 +108,31 @@ const VISIBLE_CHANGES: &[(&str, &str)] = &[
     ),
     // XHTML renders CDATA content.
     ("<p><![CDATA[old]]></p>", "<p><![CDATA[new]]></p>"),
+    // Second review. In XHTML a self-closed title, script or style is a
+    // complete element; read the HTML way it hid the rest of the document.
+    (
+        "<?xml version=\"1.0\"?><html xmlns=\"http://www.w3.org/1999/xhtml\"><head><title/></head><body><p>Pay 100 now</p></body></html>",
+        "<?xml version=\"1.0\"?><html xmlns=\"http://www.w3.org/1999/xhtml\"><head><title/></head><body><p>Pay 900 now</p></body></html>",
+    ),
+    (
+        "<html><head><script src=\"a.js\"/></head><body><p>Pay 100 now</p></body></html>",
+        "<html><head><script src=\"a.js\"/></head><body><p>Pay 900 now</p></body></html>",
+    ),
+    (
+        "<html><head><style/></head><body><p>Pay 100 now</p></body></html>",
+        "<html><head><style/></head><body><p>Pay 900 now</p></body></html>",
+    ),
+    // A title whose end tag is misspelled must not swallow the body.
+    (
+        "<head><title>Doc</titel></head><body><p>Pay 100</p>",
+        "<head><title>Doc</titel></head><body><p>Pay 900</p>",
+    ),
+    // `</` with no `>` anywhere after it.
+    (
+        "a </ b and then lots of visible OLD text\nmore text",
+        "a </ b and then lots of visible NEW text\nmore text",
+    ),
+    ("Ratio is </3 OLD", "Ratio is </3 NEW"),
 ];
 
 #[test]
@@ -141,8 +166,8 @@ fn differences_nobody_sees_stay_formatting_only() {
             "<p>a</p><script>never closed 2",
         ),
         (
-            "<p>a</p><style/>p{x:1}</style>",
-            "<p>a</p><style/>p{x:2}</style>",
+            "<p>a</p><style>p{x:1}</style>b",
+            "<p>a</p><style>p{x:2}</style>b",
         ),
         (
             "<body><ix:header><ix:hidden>1</ix:hidden></ix:header>a",
@@ -182,6 +207,64 @@ fn auto_mode_reads_plain_text_that_mentions_tags_as_text() {
         let report = run_with(old, new, ModeChoice::Auto);
         assert_eq!(report.mode, Some(Mode::Whitespace));
         assert_eq!(report.outcome, Outcome::ChangesFound, "{old:?}");
+    }
+}
+
+/// `auto` once read anything that opened with a common tag as HTML. Markdown
+/// with an HTML heading, plain text that opens with `<b>`, and old tagged
+/// EDGAR text all lost what sat in angle brackets. An input that opens with a
+/// tag but not as an HTML document is now refused, and the caller chooses.
+#[test]
+fn auto_mode_refuses_a_leading_tag_that_is_not_an_html_document() {
+    let pairs = [
+        (
+            "<h1 align=\"center\">Tool</h1>\n\nUse `map<K, V>` here.\n",
+            "<h1 align=\"center\">Tool</h1>\n\nUse `map<K, W>` here.\n",
+        ),
+        (
+            "<b>Note</b> see vector<int> x",
+            "<b>Note</b> see vector<long> x",
+        ),
+        (
+            "<i> is less than <j> in the loop",
+            "<i> is less than <k> in the loop",
+        ),
+        (
+            "<DOCUMENT>\n<TYPE>EX-10\n<SEQUENCE>2\n<TEXT>\n<TABLE>\n<CAPTION>\n<S> <C>\nRevenue 100\n</TABLE>\nSee note <F1> and Section <A> of the plan.\n</TEXT>\n</DOCUMENT>\n",
+            "<DOCUMENT>\n<TYPE>EX-10\n<SEQUENCE>2\n<TEXT>\n<TABLE>\n<CAPTION>\n<S> <C>\nRevenue 100\n</TABLE>\nSee note <F2> and Section <B> of the plan.\n</TEXT>\n</DOCUMENT>\n",
+        ),
+        (
+            "<div class=\"a\"><p>Hello</p></div>",
+            "<div class=\"b\"><p>Hello</p></div>",
+        ),
+    ];
+    for (old, new) in pairs {
+        let refusal = compare(
+            Input {
+                bytes: old.as_bytes(),
+                path: Some("old file"),
+            },
+            Input {
+                bytes: new.as_bytes(),
+                path: Some("-new"),
+            },
+            &Options {
+                mode: ModeChoice::Auto,
+                explicit: false,
+            },
+        )
+        .expect_err("auto must not guess");
+        assert_eq!(refusal.code, "E_MODE_AMBIGUOUS", "{old:?}");
+        assert_eq!(refusal.detail["old"], "unclear");
+        // The suggested command quotes the space and guards the leading dash.
+        assert_eq!(
+            refusal.next_command.as_deref(),
+            Some("redline 'old file' ./-new --mode html-text")
+        );
+        // Read as text, as the caller would for Markdown or tagged text, the
+        // change is found.
+        let as_text = run_with(old, new, ModeChoice::Fixed(Mode::Whitespace));
+        assert_eq!(as_text.outcome, Outcome::ChangesFound, "{old:?}");
     }
 }
 
@@ -255,9 +338,21 @@ fn edits_to_what_a_number_means_are_numeric() {
         ),
         // The same words away from a number are ordinary text.
         (
-            "the may flower",
+            "the march flower",
             "the june flower",
-            entry(TextModified, false, "may", "june"),
+            entry(TextModified, false, "march", "june"),
+        ),
+        // `may` is a verb far more often than a month.
+        (
+            "Bank 5 be late",
+            "Bank 5 may be late",
+            entry(TextModified, false, "", "may "),
+        ),
+        // A spacing edit next to a number does not change the number.
+        (
+            "up 5.25% today",
+            "up 5.25 % today",
+            entry(TextModified, false, "", " "),
         ),
         // A word that is not a modifier, next to a number, is ordinary text.
         (
@@ -365,6 +460,45 @@ fn heavily_changed_input_is_not_quadratic() {
             "{name}: {}",
             summary.churn_ratio
         );
+    }
+}
+
+/// A long run of a few repeated values (a column of `yes` and `no` cells)
+/// once took time quadratic in its length even with two edits: 27 seconds
+/// for 560 KB in a release build. The edits must also still be found one by
+/// one, not folded into a replacement of everything between them.
+#[test]
+fn repeated_values_with_a_few_edits_are_fast_and_exact() {
+    const COUNT: usize = 60_000;
+    // A fixed, irregular yes/no sequence.
+    let mut state = 5u64;
+    let lines: Vec<&str> = (0..COUNT)
+        .map(|_| {
+            state = state
+                .wrapping_mul(6_364_136_223_846_793_005)
+                .wrapping_add(1_442_695_040_888_963_407);
+            if (state >> 40) & 1 == 0 { "yes" } else { "no" }
+        })
+        .collect();
+    let mut edited = lines.clone();
+    edited[100] = "maybe";
+    edited[COUNT - 100] = "perhaps";
+
+    for (mode, separator) in [(Mode::Raw, "\n"), (Mode::Whitespace, "\n\n")] {
+        let old = lines.join(separator);
+        let new = edited.join(separator);
+        let started = Instant::now();
+        let report = run_with(&old, &new, ModeChoice::Fixed(mode));
+        let elapsed = started.elapsed();
+        assert!(
+            elapsed < Duration::from_secs(20),
+            "{mode:?}: took {elapsed:?}"
+        );
+        let found: Vec<String> = semantic(&report)
+            .into_iter()
+            .map(|(_, _, _, new_text)| new_text)
+            .collect();
+        assert_eq!(found, ["maybe", "perhaps"], "{mode:?}");
     }
 }
 

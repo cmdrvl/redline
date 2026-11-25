@@ -256,12 +256,19 @@ fn raw_identity(source: &str) -> CanonicalDoc {
     }
 }
 
-/// Elements an HTML document or fragment commonly opens with.
-const HTML_OPENERS: &[&str] = &[
-    "a", "article", "b", "body", "br", "center", "div", "font", "footer", "h1", "h2", "h3", "h4",
-    "h5", "h6", "head", "header", "hr", "html", "i", "link", "main", "meta", "nav", "ol", "p",
-    "pre", "script", "section", "span", "style", "table", "title", "ul",
-];
+/// What an input looks like from the way it opens.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Format {
+    /// Opens with `<!DOCTYPE html` or an `<html>` tag: an HTML document.
+    Html,
+    /// Opens with text.
+    Text,
+    /// Opens with some other tag. It may be an HTML fragment, in which case
+    /// tags should be ignored, or Markdown, XML or old tagged EDGAR text, in
+    /// which case what sits in angle brackets is content. Guessing wrong one
+    /// way hides real changes, so the caller is asked.
+    Unclear,
+}
 
 /// The lines EDGAR wraps around each document of a filing. A document saved
 /// from EDGAR often still carries them in front of its HTML.
@@ -271,18 +278,15 @@ const EDGAR_WRAPPER: &[&str] = &[
     "<sequence>",
     "<filename>",
     "<description>",
-    "<text>",
 ];
 
-/// True when the input opens the way an HTML or XHTML document does: after
-/// an optional byte order mark, XML declaration, comments and EDGAR wrapper
-/// lines, the first thing in it is `<!DOCTYPE html` or a well-known HTML
-/// start tag.
+/// Classify an input by how it opens, after an optional byte order mark, XML
+/// declaration, comments and EDGAR wrapper lines.
 ///
-/// Mentioning a tag is not enough. Plain text that talks about `<head>` or
-/// `Vec<String>` must not be read as markup, because everything in angle
-/// brackets would then be hidden from the diff.
-pub fn looks_like_html(source: &str) -> bool {
+/// Mentioning a tag is not enough to be HTML. Plain text that talks about
+/// `<head>` or `Vec<String>` must not be read as markup, because everything
+/// in angle brackets would then be hidden from the diff.
+pub fn detect_format(source: &str) -> Format {
     let bytes = source.as_bytes();
     let mut pos = if source.starts_with('\u{feff}') { 3 } else { 0 };
     loop {
@@ -290,44 +294,44 @@ pub fn looks_like_html(source: &str) -> bool {
             pos += 1;
         }
         let rest = &bytes[pos..];
+        let opens_with = |tag: &[u8]| {
+            rest.get(..tag.len())
+                .is_some_and(|start| start.eq_ignore_ascii_case(tag))
+        };
         let close: &[u8] = if rest.starts_with(b"<!--") {
             b"-->"
         } else if rest.starts_with(b"<?") {
             b"?>"
-        } else if EDGAR_WRAPPER.iter().any(|tag| {
-            rest.get(..tag.len())
-                .is_some_and(|start| start.eq_ignore_ascii_case(tag.as_bytes()))
-        }) {
-            // One wrapper line; what matters is the document after `<TEXT>`.
+        } else if opens_with(b"<text>") {
+            // The document starts right after this tag.
+            b">"
+        } else if EDGAR_WRAPPER.iter().any(|tag| opens_with(tag.as_bytes())) {
+            // A wrapper line with its value, such as `<TYPE>10-K`.
             b"\n"
         } else {
             break;
         };
         match rest.windows(close.len()).position(|window| window == close) {
             Some(at) => pos += at + close.len(),
-            None => return false,
+            None => return Format::Text,
         }
     }
     let rest = &bytes[pos..];
-    let doctype = b"<!doctype html";
-    if rest
-        .get(..doctype.len())
-        .is_some_and(|start| start.eq_ignore_ascii_case(doctype))
-    {
-        return true;
+    let opens_with = |tag: &[u8]| {
+        rest.get(..tag.len())
+            .is_some_and(|start| start.eq_ignore_ascii_case(tag))
+    };
+    let html_tag = opens_with(b"<html")
+        && rest
+            .get(5)
+            .is_some_and(|byte| byte.is_ascii_whitespace() || matches!(byte, b'>' | b'/'));
+    if opens_with(b"<!doctype html") || html_tag {
+        Format::Html
+    } else if rest.first() == Some(&b'<') && rest.get(1).is_some_and(u8::is_ascii_alphabetic) {
+        Format::Unclear
+    } else {
+        Format::Text
     }
-    if rest.first() != Some(&b'<') {
-        return false;
-    }
-    let name_len = rest[1..]
-        .iter()
-        .take_while(|byte| byte.is_ascii_alphanumeric())
-        .count();
-    let name = String::from_utf8_lossy(&rest[1..1 + name_len]).to_ascii_lowercase();
-    let terminated = rest
-        .get(1 + name_len)
-        .is_some_and(|byte| byte.is_ascii_whitespace() || matches!(byte, b'>' | b'/'));
-    terminated && HTML_OPENERS.contains(&name.as_str())
 }
 
 #[cfg(test)]
@@ -446,29 +450,48 @@ mod tests {
     }
 
     #[test]
-    fn html_detection() {
-        assert!(looks_like_html("<!DOCTYPE HTML><p>x"));
-        assert!(looks_like_html("<?xml version='1.0'?>\n<html xmlns=\"x\">"));
-        assert!(looks_like_html("\u{feff}\n<!-- c -->\n<HTML>\n<body>"));
-        assert!(looks_like_html("<div class=\"a\"><p>x</p></div>"));
-        assert!(!looks_like_html("plain text with a < b"));
+    fn html_documents_are_detected() {
+        for source in [
+            "<!DOCTYPE HTML><p>x",
+            "<?xml version='1.0'?>\n<html xmlns=\"x\">",
+            "\u{feff}\n<!-- c -->\n<HTML>\n<body>",
+            "<DOCUMENT>\n<TYPE>10-K\n<SEQUENCE>1\n<FILENAME>a.htm\n<TEXT>\n<!DOCTYPE html PUBLIC \"x\">",
+            "<DOCUMENT>\n<TYPE>8-K\n<TEXT><html><body>",
+        ] {
+            assert_eq!(detect_format(source), Format::Html, "{source:?}");
+        }
     }
 
     #[test]
-    fn text_that_mentions_tags_is_not_html() {
-        assert!(!looks_like_html(
-            "Notes: the <head> block.\nPayment is $100.\n"
-        ));
-        assert!(!looks_like_html(
-            "Notes on <html> docs.\nUse Vec<String> here.\n"
-        ));
-        assert!(looks_like_html(
-            "<DOCUMENT>\n<TYPE>10-K\n<SEQUENCE>1\n<FILENAME>a.htm\n<TEXT>\n<!DOCTYPE html PUBLIC \"x\">"
-        ));
-        assert!(!looks_like_html(
-            "<DOCUMENT>\n<TYPE>8-K\n<TEXT>\nPlain text press release\n"
-        ));
-        assert!(!looks_like_html("<!-- never closed <html>"));
+    fn text_that_mentions_tags_is_text() {
+        for source in [
+            "plain text with a < b",
+            "Notes: the <head> block.\nPayment is $100.\n",
+            "Notes on <html> docs.\nUse Vec<String> here.\n",
+            "<DOCUMENT>\n<TYPE>8-K\n<TEXT>\nPlain text press release\n",
+            "<!-- never closed <html>",
+            "< not a tag",
+        ] {
+            assert_eq!(detect_format(source), Format::Text, "{source:?}");
+        }
+    }
+
+    /// Each of these was once read as HTML, hiding what sits in angle
+    /// brackets. None can be told from an HTML fragment by its opening.
+    #[test]
+    fn a_leading_tag_that_is_not_html_is_unclear() {
+        for source in [
+            "<div class=\"a\"><p>x</p></div>",
+            "<h1 align=\"center\">Tool</h1>\n\nUse `map<K, V>` here.\n",
+            "<b>Note</b> see vector<int> x",
+            "<i> is less than <j> in the loop",
+            "<DOCUMENT>\n<TYPE>EX-10\n<TEXT>\n<TABLE>\n<S> <C>\nSee note <F1>.\n",
+            "<TYPE>writer notes\n<p>\nList<String>",
+            "<script>let x = 1;</script>",
+            "<htmlish>",
+        ] {
+            assert_eq!(detect_format(source), Format::Unclear, "{source:?}");
+        }
     }
 
     // The cases below were each a missed change: the scanner hid text that a
@@ -539,8 +562,46 @@ mod tests {
     #[test]
     fn html_script_and_style_hide_to_the_end_when_unclosed() {
         assert_eq!(html("a<script>var x = 1;"), "a");
-        assert_eq!(html("a<script/>hidden</script>b"), "ab");
         assert_eq!(html("a<STYLE>p{}</Style >b"), "ab");
+    }
+
+    /// In XHTML `<script src="a.js"/>` and `<title/>` are complete elements.
+    /// Reading them the HTML way hid the whole rest of the document.
+    #[test]
+    fn html_self_closed_script_style_and_title_hide_nothing() {
+        let page = |head: &str| {
+            format!(
+                "<?xml version=\"1.0\"?><html xmlns=\"http://www.w3.org/1999/xhtml\">\
+                 <head>{head}</head><body><p>Pay 100 now</p></body></html>"
+            )
+        };
+        for head in [
+            "<title/>",
+            "<script src=\"a.js\"/>",
+            "<style/>",
+            "<title />",
+        ] {
+            assert_eq!(html(&page(head)), "Pay 100 now", "{head}");
+        }
+        // The price of that reading: in plain HTML the script body shows.
+        assert_eq!(html("a<script/>shown</script>b"), "ashownb");
+    }
+
+    #[test]
+    fn html_unclosed_title_hides_nothing() {
+        assert_eq!(
+            html("<head><title>Doc</titel></head><body><p>Pay 100</p>"),
+            "Doc Pay 100"
+        );
+    }
+
+    #[test]
+    fn html_bogus_end_tag_with_no_close_keeps_the_text() {
+        assert_eq!(
+            html("a </ b and then visible text"),
+            "a </ b and then visible text"
+        );
+        assert_eq!(html("Ratio is </3 OLD"), "Ratio is </3 OLD");
     }
 
     #[test]

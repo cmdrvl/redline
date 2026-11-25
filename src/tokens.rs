@@ -78,7 +78,7 @@ const NUMBER_MODIFIERS: &[&str] = &[
     "february",
     "march",
     "april",
-    "may",
+    // `may` is left out: it is far more often a verb than a month.
     "june",
     "july",
     "august",

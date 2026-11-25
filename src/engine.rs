@@ -4,7 +4,7 @@ use std::ops::Range;
 
 use serde_json::json;
 
-use crate::canon::{CanonicalDoc, Edges, Mode, canonicalize, looks_like_html};
+use crate::canon::{CanonicalDoc, Edges, Format, Mode, canonicalize, detect_format};
 use crate::classify::{HunkClass, classify};
 use crate::diff::{Change, diff};
 use crate::refusal::{Refusal, RefusalCode};
@@ -91,8 +91,15 @@ impl Input<'_> {
 /// suggested command is meant to be run as given, and a path may hold spaces
 /// or shell syntax.
 fn shell_word(text: &str) -> String {
+    // Quoting does not stop a leading `-` from being read as an option.
+    let anchored;
+    let text = if text.starts_with('-') {
+        anchored = format!("./{text}");
+        anchored.as_str()
+    } else {
+        text
+    };
     let plain = !text.is_empty()
-        && !text.starts_with('-')
         && text
             .chars()
             .all(|ch| ch.is_ascii_alphanumeric() || "_-./+=:,@%".contains(ch));
@@ -238,24 +245,26 @@ fn resolve_mode(
     old: &Input<'_>,
     new: &Input<'_>,
 ) -> Result<Mode, Refusal> {
-    let detect = |text: &str| {
-        if looks_like_html(text) {
-            Mode::HtmlText
-        } else {
-            Mode::Whitespace
-        }
-    };
     match choice {
         ModeChoice::Fixed(mode) => Ok(mode),
         ModeChoice::Auto => {
-            let old_mode = detect(old_text);
-            let new_mode = detect(new_text);
-            if old_mode == new_mode {
-                return Ok(old_mode);
+            let old_format = detect_format(old_text);
+            let new_format = detect_format(new_text);
+            match (old_format, new_format) {
+                (Format::Html, Format::Html) => return Ok(Mode::HtmlText),
+                (Format::Text, Format::Text) => return Ok(Mode::Whitespace),
+                _ => {}
             }
+            // What each input looks like: a mode name, or `unclear` when it
+            // opens with a tag but not as an HTML document.
+            let describe = |format: Format| match format {
+                Format::Html => Mode::HtmlText.as_str(),
+                Format::Text => Mode::Whitespace.as_str(),
+                Format::Unclear => "unclear",
+            };
             Err(Refusal::new(
                 RefusalCode::ModeAmbiguous,
-                json!({ "old": old_mode.as_str(), "new": new_mode.as_str() }),
+                json!({ "old": describe(old_format), "new": describe(new_format) }),
                 Some(format!(
                     "redline {} {} --mode html-text",
                     old.label("<old>"),

@@ -96,7 +96,7 @@ Swapping the two inputs gives the mirror-image report: same spans, `clause_added
 
 | `--mode` | What is ignored | Use for |
 | :--- | :--- | :--- |
-| `auto` (default) | Picks `html-text` when an input opens like an HTML or XHTML document (EDGAR wrapper lines are allowed in front), otherwise `whitespace`. Refuses if the two inputs look different. | Most runs |
+| `auto` (default) | Picks `html-text` when both inputs open as HTML documents (`<!DOCTYPE html` or `<html>`; EDGAR wrapper lines may come first) and `whitespace` when both open with text. Refuses when they differ, or when one opens with some other tag and could be an HTML fragment, Markdown or tagged text. | Most runs |
 | `raw` | Nothing. Every byte counts. | Config files, anything where whitespace matters |
 | `whitespace` | Runs of whitespace collapse to one space. Re-wrapping is not a change. A blank line is a paragraph break. | Plain text, extracted PDF text |
 | `html-text` | Tags, attributes, comments, `<script>`, `<style>`, the document title and the hidden Inline XBRL header (`<ix:header>`). Entities are decoded. Whitespace collapses. | SEC filings, web pages, HTML contracts |
@@ -294,7 +294,7 @@ redline old.txt new.txt --mode whitespace
 | `E_EMPTY_INPUT` | An input is zero bytes. | Pass a file that has content. |
 | `E_BINARY_INPUT` | An input is not UTF-8 text (PDF, image, UTF-16). | Extract or convert to UTF-8 text, then diff that. |
 | `E_MODE_UNSUPPORTED` | The `--mode` value is not available in this release. | Use `auto`, `raw`, `whitespace` or `html-text`. |
-| `E_MODE_AMBIGUOUS` | In `auto`, one input looks like HTML and the other does not. | Pass `--mode` explicitly. |
+| `E_MODE_AMBIGUOUS` | In `auto`, the inputs look like different formats, or one opens with a tag without being an HTML document. | Pass `--mode` explicitly: `html-text` to ignore tags, `whitespace` to treat them as text. |
 
 With `--json` a refusal is the same report object on stdout with `outcome: "REFUSAL"` and a `refusal` block (`code`, `message`, `detail`, `next_command`). Without `--json` it is text on stderr.
 
@@ -304,7 +304,7 @@ With `--json` a refusal is the same report object on stdout with `outcome: "REFU
 - **Exit 1 breaks my script.** That is `CHANGES_FOUND`. Use `--exit-zero-on-change`.
 - **A curly quote became a straight quote and it counts as a change.** It is one: the characters differ. redline does not fold typography.
 - **Hidden text is being diffed.** Only `<script>`, `<style>`, the head's `<title>` and a properly closed `<ix:header>` are skipped. Text hidden with CSS (`display:none`) is still text to redline. When markup is broken, redline keeps text a browser might hide; it would sooner report a change nobody sees than miss one somebody reads.
-- **`auto` picked `whitespace` for my HTML.** The file does not open with a doctype or a common HTML tag. Pass `--mode html-text`.
+- **`E_MODE_AMBIGUOUS` on an HTML fragment or a Markdown file.** The file opens with a tag but is not a whole HTML document, so redline cannot tell whether `<...>` is markup or content. Pass `--mode html-text` for a fragment, `--mode whitespace` for Markdown or tagged text.
 - **`redline: witness: ...` on stderr.** The ledger could not be written. The result is still correct. Run `redline doctor triage` or pass `--no-witness`.
 
 ## Limitations
@@ -316,6 +316,7 @@ This is the first release. The design in [`docs/SPEC.md`](./docs/SPEC.md) is lar
 - **Formatting hunks are coarse.** One `formatting_only` hunk covers each unchanged stretch that has any markup difference, from the first differing byte to the last. Use `--mode raw` to see every byte-level difference.
 - **HTML is scanned, not parsed into a tree.** Markup boundaries follow the HTML standard's tokenizer rules, but nesting is not modeled, and CSS is not read. Text carried in attributes (`alt`, `value`, `title`) is markup and is not diffed.
 - **Huge rewrites are reported coarsely.** When several thousand consecutive words are replaced by several thousand others with no distinctive word in common, that stretch is one hunk. Nothing is dropped; the hunk is just large.
+- **Self-closed `<script/>` is read the XHTML way.** That is right for filings. In plain HTML it means the script body after it is diffed as text.
 - **Sentence boundaries** come from the Unicode segmentation rules, which can split after an abbreviation such as `U.S.`. That only affects whether an insertion is labeled `clause_added` or `text_modified`.
 - **No Unicode normalization.** `é` as one code point and as `e` plus a combining accent are different text.
 - **Inputs are read into memory.** Peak memory was about six times the combined input size on the 10-K pair above (63 MB for 11 MB of HTML).

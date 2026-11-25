@@ -192,7 +192,7 @@
     },
     {
       "code": "E_MODE_AMBIGUOUS",
-      "message": "The two inputs look like different formats; auto mode will not guess",
+      "message": "The inputs look like different formats, or open with a tag without being an HTML document; auto mode will not guess",
       "action": "retry_with_flag",
       "flag": "--mode"
     }

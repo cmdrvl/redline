@@ -31,7 +31,7 @@ set -e safety:
 - Refusals still exit 2.
 
 Modes (--mode):
-- auto (default): html-text when an input opens like an HTML or XHTML document (a doctype or a common HTML start tag, EDGAR wrapper lines allowed in front), otherwise whitespace. Refuses with E_MODE_AMBIGUOUS when the two inputs look different.
+- auto (default): html-text when both inputs open as HTML documents (`<!DOCTYPE html` or `<html>`, EDGAR wrapper lines allowed in front), whitespace when both open with text. Refuses with E_MODE_AMBIGUOUS when they differ or when one opens with some other tag (an HTML fragment, Markdown, tagged text): pass --mode html-text to ignore tags or --mode whitespace to treat them as text.
 - raw: every byte counts.
 - whitespace: runs of whitespace collapse to one space; re-wrapping is not a change.
 - html-text: markup, comments, scripts, styles, the document title and the hidden Inline XBRL header are dropped; entities are decoded; whitespace collapses.

@@ -38,7 +38,7 @@ impl RefusalCode {
             RefusalCode::EmptyInput => "input is empty",
             RefusalCode::BinaryInput => "input is not UTF-8 text",
             RefusalCode::ModeUnsupported => "mode is not available in this release",
-            RefusalCode::ModeAmbiguous => "the two inputs look like different formats",
+            RefusalCode::ModeAmbiguous => "cannot tell how to read the inputs; choose a mode",
         }
     }
 }
