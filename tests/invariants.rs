@@ -293,6 +293,12 @@ fn has_literal_text(source: &str) -> bool {
     ["<![cdata[", "<textarea", "<xmp", "<plaintext", "<title"]
         .iter()
         .any(|opener| lower.contains(opener))
+        // Markup that never closes keeps the rest of the input as text.
+        || ["<!", "<?", "</"].iter().any(|opener| {
+            lower
+                .match_indices(opener)
+                .any(|(at, _)| !lower[at..].contains('>'))
+        })
 }
 
 /// Inside literal-text content a span still holds exactly the changed bytes.

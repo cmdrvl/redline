@@ -27,6 +27,8 @@ pub struct Token {
     /// Changes what a neighbouring number means without containing a digit:
     /// a sign, a currency or percent mark, a month, a magnitude word.
     pub number_modifier: bool,
+    /// A `-` or `+`.
+    pub is_sign: bool,
     /// First token of a sentence or block.
     pub sentence_start: bool,
     /// Last token before a block boundary (a line in `raw` mode).
@@ -155,6 +157,7 @@ pub fn tokenize<'a>(doc: &'a CanonicalDoc, mode: Mode, interner: &mut Interner<'
             kind,
             numeric: piece.chars().any(char::is_numeric),
             number_modifier: is_number_modifier(piece),
+            is_sign: matches!(piece, "-" | "+"),
             sentence_start: false,
             block_end,
             raw: doc.raw_span(canon.clone()),

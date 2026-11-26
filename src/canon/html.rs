@@ -90,6 +90,10 @@ pub(super) fn scan(source: &str, builder: &mut Builder) {
     // Body content has been seen, so a later `<head>` tag is ignored, as a
     // browser ignores it. A fragment is cut from a body by construction.
     let mut body_started = builder.edges == Edges::Fragment;
+    // Where the last search for an end tag landed, one per kind of search.
+    let mut ix_header_ends = Lookahead::default();
+    let mut title_ends = Lookahead::default();
+    let mut head_title_ends = Lookahead::default();
 
     while pos < bytes.len() {
         let text_end = next_markup(bytes, pos);
@@ -121,24 +125,28 @@ pub(super) fn scan(source: &str, builder: &mut Builder) {
                     body_started = true;
                     text::scan_range(source, content..content_end, builder, no_references);
                     pos = close.map_or(bytes.len(), |at| at + 3);
+                } else if let Some(at) = find_byte(bytes, pos, b'>') {
+                    pos = at + 1;
                 } else {
-                    pos = find_byte(bytes, pos, b'>').map_or(bytes.len(), |at| at + 1);
+                    keep_unclosed(source, pos, builder);
+                    pos = bytes.len();
                 }
             }
-            Some(b'?') => {
-                pos = find_byte(bytes, pos, b'>').map_or(bytes.len(), |at| at + 1);
-            }
-            // `</` not followed by a letter is a bogus comment (`</>` is
-            // simply dropped): nothing up to the next `>` is rendered. With
-            // no `>` at all a browser hides the rest of the document; that
-            // is broken markup, so the text is kept.
+            // A processing instruction, or `</` not followed by a letter:
+            // nothing up to the next `>` is rendered (`</>` is simply
+            // dropped).
+            Some(b'?') => match find_byte(bytes, pos, b'>') {
+                Some(at) => pos = at + 1,
+                None => {
+                    keep_unclosed(source, pos, builder);
+                    pos = bytes.len();
+                }
+            },
             Some(b'/') if !bytes.get(pos + 2).is_some_and(u8::is_ascii_alphabetic) => {
                 match find_byte(bytes, pos, b'>') {
                     Some(at) => pos = at + 1,
                     None => {
-                        in_head = false;
-                        body_started = true;
-                        text::scan_range(source, pos..bytes.len(), builder, entities::decode);
+                        keep_unclosed(source, pos, builder);
                         pos = bytes.len();
                     }
                 }
@@ -182,7 +190,9 @@ pub(super) fn scan(source: &str, builder: &mut Builder) {
                     // it is an ordinary element to an HTML parser, so it is
                     // dropped only when its end tag is really there.
                     "ix:header" if !tag.self_closing => {
-                        if let Some((_, after)) = end_tag(bytes, pos, name) {
+                        if let Some((_, after)) =
+                            ix_header_ends.find(pos, |from| end_tag(bytes, from, name))
+                        {
                             pos = after;
                         }
                     }
@@ -190,9 +200,27 @@ pub(super) fn scan(source: &str, builder: &mut Builder) {
                     // it is literal. The document title is not rendered on
                     // the page, so a title in the head is dropped.
                     // A title that is self-closed or never closed is treated
-                    // as an ordinary tag, so it cannot hide what follows.
-                    "title" if tag.self_closing || end_tag(bytes, pos, name).is_none() => {}
-                    "title" | "textarea" => {
+                    // as an ordinary tag, so it cannot hide what follows. In
+                    // the head, "never closed" includes reaching `</head>` or
+                    // `<body>` first: a later `</title>`, such as an inline
+                    // SVG's, must not make the body part of the title.
+                    "title" if !tag.self_closing => {
+                        let end = if in_head {
+                            head_title_ends
+                                .find(pos, |from| head_title_end(bytes, from))
+                                .filter(|&(at, _)| is_end_tag(bytes, at, "title"))
+                        } else {
+                            title_ends.find(pos, |from| end_tag(bytes, from, name))
+                        };
+                        if let Some((content_end, after)) = end {
+                            if !in_head {
+                                let content = pos..content_end;
+                                text::scan_range(source, content, builder, entities::decode);
+                            }
+                            pos = after;
+                        }
+                    }
+                    "textarea" => {
                         let (content_end, after) =
                             end_tag(bytes, pos, name).unwrap_or((bytes.len(), bytes.len()));
                         if !in_head {
@@ -366,25 +394,81 @@ fn read_tag(source: &str, pos: usize) -> Tag {
     }
 }
 
-/// The end tag that closes the raw-content element `name`, whose content
-/// starts at `from`: the offset where the tag starts and the offset just past
-/// it. `None` if the element is never closed.
-fn end_tag(bytes: &[u8], from: usize, name: &str) -> Option<(usize, usize)> {
+/// Markup that opens at `pos` and is never closed. A browser hides everything
+/// after it. It is broken, so the text is kept and diffed.
+fn keep_unclosed(source: &str, pos: usize, builder: &mut Builder) {
+    text::scan_range(source, pos..source.len(), builder, entities::decode);
+}
+
+/// Remembers where a forward search landed. The scanner only moves forward, so
+/// a later search that starts at or before that place must land there too.
+/// Without this, a document that repeats an unclosed tag thousands of times
+/// searches to the end of the input once per tag.
+#[derive(Default)]
+struct Lookahead {
+    last: Option<Option<(usize, usize)>>,
+}
+
+impl Lookahead {
+    /// `search(from)` returns the first match at or after `from`.
+    fn find(
+        &mut self,
+        from: usize,
+        search: impl FnOnce(usize) -> Option<(usize, usize)>,
+    ) -> Option<(usize, usize)> {
+        match self.last {
+            Some(None) => None,
+            Some(Some((at, after))) if from <= at => Some((at, after)),
+            _ => {
+                let found = search(from);
+                self.last = Some(found);
+                found
+            }
+        }
+    }
+}
+
+/// True when the `<` at `at` starts the tag `</name`.
+fn is_end_tag(bytes: &[u8], at: usize, name: &str) -> bool {
+    bytes.get(at + 1) == Some(&b'/') && names_tag(bytes, at + 2, name)
+}
+
+/// True when the tag name at `start` is `name`.
+fn names_tag(bytes: &[u8], start: usize, name: &str) -> bool {
+    bytes
+        .get(start..start + name.len())
+        .is_some_and(|slice| slice.eq_ignore_ascii_case(name.as_bytes()))
+        && bytes
+            .get(start + name.len())
+            .is_none_or(|byte| byte.is_ascii_whitespace() || matches!(byte, b'/' | b'>'))
+}
+
+/// The first tag at or after `from` that matches, as the offset where it
+/// starts and the offset just past it.
+fn find_tag(bytes: &[u8], from: usize, matches: impl Fn(usize) -> bool) -> Option<(usize, usize)> {
     let mut pos = from;
     while let Some(at) = find_byte(bytes, pos, b'<') {
-        let candidate = at + 2;
-        let matches_name = bytes.get(at + 1) == Some(&b'/')
-            && bytes
-                .get(candidate..candidate + name.len())
-                .is_some_and(|slice| slice.eq_ignore_ascii_case(name.as_bytes()))
-            && bytes
-                .get(candidate + name.len())
-                .is_none_or(|byte| byte.is_ascii_whitespace() || matches!(byte, b'/' | b'>'));
-        if matches_name {
+        if matches(at) {
             let after = find_byte(bytes, at, b'>').map_or(bytes.len(), |end| end + 1);
             return Some((at, after));
         }
         pos = at + 1;
     }
     None
+}
+
+/// The end tag that closes the raw-content element `name`, whose content
+/// starts at `from`. `None` if the element is never closed.
+fn end_tag(bytes: &[u8], from: usize, name: &str) -> Option<(usize, usize)> {
+    find_tag(bytes, from, |at| is_end_tag(bytes, at, name))
+}
+
+/// What comes first after a title in the head: its end tag, or a sign that
+/// the head is over and the title was never closed.
+fn head_title_end(bytes: &[u8], from: usize) -> Option<(usize, usize)> {
+    find_tag(bytes, from, |at| {
+        is_end_tag(bytes, at, "title")
+            || is_end_tag(bytes, at, "head")
+            || names_tag(bytes, at + 1, "body")
+    })
 }

@@ -316,6 +316,7 @@ This is the first release. The design in [`docs/SPEC.md`](./docs/SPEC.md) is lar
 - **Formatting hunks are coarse.** One `formatting_only` hunk covers each unchanged stretch that has any markup difference, from the first differing byte to the last. Use `--mode raw` to see every byte-level difference.
 - **HTML is scanned, not parsed into a tree.** Markup boundaries follow the HTML standard's tokenizer rules, but nesting is not modeled, and CSS is not read. Text carried in attributes (`alt`, `value`, `title`) is markup and is not diffed.
 - **Huge rewrites are reported coarsely.** When several thousand consecutive words are replaced by several thousand others with no distinctive word in common, that stretch is one hunk. Nothing is dropped; the hunk is just large.
+- **`auto` trusts the opening.** A text file whose first characters are `<!DOCTYPE html` or `<html>` is read as HTML. Pass `--mode whitespace` for prose that opens that way, and for EDGAR submissions that mix HTML documents with old tagged-text exhibits.
 - **Self-closed `<script/>` is read the XHTML way.** That is right for filings. In plain HTML it means the script body after it is diffed as text.
 - **Sentence boundaries** come from the Unicode segmentation rules, which can split after an abbreviation such as `U.S.`. That only affects whether an insertion is labeled `clause_added` or `text_modified`.
 - **No Unicode normalization.** `é` as one code point and as `e` plus a combining accent are different text.

@@ -133,7 +133,49 @@ const VISIBLE_CHANGES: &[(&str, &str)] = &[
         "a </ b and then lots of visible NEW text\nmore text",
     ),
     ("Ratio is </3 OLD", "Ratio is </3 NEW"),
+    // Third review. `<!` and `<?` with no `>` anywhere after them.
+    (
+        "<!DOCTYPE html><p>Total <! see note OLD amount 100",
+        "<!DOCTYPE html><p>Total <! see note NEW amount 900",
+    ),
+    (
+        "<!DOCTYPE html><p>Total <? see note OLD amount 100",
+        "<!DOCTYPE html><p>Total <? see note NEW amount 900",
+    ),
+    // An unclosed head title must not reach a later inline SVG title.
+    (
+        "<!DOCTYPE html><html><head><title>Doc</head><body><p>Pay 100 now</p><svg><title>i</title></svg>",
+        "<!DOCTYPE html><html><head><title>Doc</head><body><p>Pay 900 now</p><svg><title>i</title></svg>",
+    ),
+    (
+        "<head><title>Doc<body><p>Pay 100</p><svg><title>i</title></svg>",
+        "<head><title>Doc<body><p>Pay 900</p><svg><title>i</title></svg>",
+    ),
 ];
+
+/// Repeating a tag whose end never comes once made the scanner search to the
+/// end of the input once per tag: 57 to 78 seconds for under 1 MB.
+#[test]
+fn repeated_unclosed_tags_are_not_quadratic() {
+    const COUNT: usize = 60_000;
+    for (opener, tail) in [
+        ("<title>x ", ""),
+        ("<ix:header>x ", ""),
+        ("<title>x</titl> ", ""),
+        ("<head><title>x ", "<body>"),
+        ("<title>x ", "</title>"),
+    ] {
+        let page = |last: &str| format!("<html><body>{}{last}{tail}", opener.repeat(COUNT));
+        let started = Instant::now();
+        let report = html(&page(" OLD "), &page(" NEW "));
+        let elapsed = started.elapsed();
+        assert_eq!(report.outcome, Outcome::ChangesFound, "{opener}{tail}");
+        assert!(
+            elapsed < Duration::from_secs(20),
+            "{opener}: took {elapsed:?}"
+        );
+    }
+}
 
 #[test]
 fn visible_text_changes_in_broken_html_are_found() {
@@ -341,6 +383,12 @@ fn edits_to_what_a_number_means_are_numeric() {
             "the march flower",
             "the june flower",
             entry(TextModified, false, "march", "june"),
+        ),
+        // A list marker after a number is not its sign.
+        (
+            "Rate is 5\n- item\n",
+            "Rate is 5\nitem\n",
+            entry(TextModified, false, "- ", ""),
         ),
         // `may` is a verb far more often than a month.
         (

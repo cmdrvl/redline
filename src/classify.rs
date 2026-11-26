@@ -80,6 +80,18 @@ fn modifies_adjacent_number(doc: &TokenDoc, range: Range<usize>) -> bool {
     }
     let before = (0..range.start).rev().find(text);
     let after = (range.end..tokens.len()).find(text);
+    // A hyphen or plus is a sign only when it touches the number after it.
+    // Standing alone it is a list marker or a dash.
+    let loose_sign = |index: usize| {
+        let mark = &tokens[index];
+        mark.is_sign
+            && !tokens
+                .get(index + 1)
+                .is_some_and(|next| next.numeric || next.number_modifier)
+    };
+    if range.clone().any(loose_sign) {
+        return false;
+    }
     before.is_some_and(|index| tokens[index].numeric)
         || after.is_some_and(|index| tokens[index].numeric)
 }
